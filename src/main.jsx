@@ -20,6 +20,7 @@ import {
 
 import { auth } from './firebase';
 import AdminDashboard from './admin/AdminDashboard';
+import CentreCommute from './commute/CentreCommute';
 import CentreLocationMap from './commute/CentreLocationMap';
 import {
   getCentres,
@@ -2382,10 +2383,15 @@ if (!user) {
                   {selectedCentre.address || 'Address not provided'}{' '}
                   {selectedCentre.postal ? `(${selectedCentre.postal})` : ''}
                 </p>
-                <CentreLocationMap
+                <CentreCommute
                   centre={selectedCentre}
                   currentUser={currentUser}
+                  profileId={profileId}
                   onSignIn={() => setAuthMode('login')}
+                  onEditProfile={() => {
+                    setSelectedCentre(null);
+                    openPage('Family profile');
+                  }}
                 />
                 <p><b>Centre code:</b> {selectedCentre.centre_code || 'Not provided'}</p>
                 <p><b>Contact:</b> {selectedCentre.contact || 'Not provided'}</p>
