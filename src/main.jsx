@@ -60,6 +60,7 @@ import {
   toApiProfile,
   fromApiProfile
 } from './profile/familyProfile';
+import { createOnboardingController } from './profile/onboarding';
 import './styles.css';
 
 function mapCentre(centre = {}) {
@@ -515,35 +516,74 @@ function App() {
     setMatchMessage('');
   };
 
-  const loadFamilyProfile = async (user) => {
-    let local = null;
-    try { local = JSON.parse(localStorage.getItem(profileKey(user.uid)) || 'null'); } catch { /* ignore */ }
-    let found = local;
-    try {
-      const list = await getFamilyProfiles();
-      if (Array.isArray(list) && list.length) {
-        found = fromApiProfile(list[0], local);
-        setProfileId(list[0].profile_id);
-        if (list[0].profile_name) {
-          setProfileName(list[0].profile_name);
+  const [onboardingState, setOnboardingState] = useState(() => ({
+    status: 'guest',
+    profile: null,
+    profileId: null,
+    profileName: 'My family profile',
+    draft: null,
+    error: null,
+    isFirstSave: false,
+  }));
+
+  const controller = useMemo(() => {
+    return createOnboardingController({
+      loadAccount: async (user) => {
+        try {
+          return await getMyProfile();
+        } catch (profileError) {
+          if (String(profileError.message).includes('404')) {
+            return await createMyProfile(user.displayName || user.email?.split('@')[0] || 'Parent');
+          }
+          throw profileError;
         }
+      },
+      loadProfiles: async () => {
+        return await getFamilyProfiles();
+      },
+      createProfile: async (payload) => {
+        return await createFamilyProfile(payload);
+      },
+      updateProfile: async (id, payload) => {
+        return await updateFamilyProfile(id, payload);
+      },
+      onState: (nextState) => {
+        setOnboardingState(nextState);
+      },
+    });
+  }, []);
+
+  useEffect(() => {
+    if (onboardingState.status === 'ready') {
+      const p = onboardingState.profile;
+      setProfile(p);
+      setProfileId(onboardingState.profileId);
+      setProfileName(onboardingState.profileName);
+      setProfileForm(p);
+      applyProfileToMatching(p);
+      if (onboardingState.isFirstSave) {
+        setPage('Find my matches');
+        notify('Family profile completed! Here are your matches.');
       }
-    } catch (error) {
-      console.warn('Family profile load:', error.message);
-    }
-    if (isProfileComplete(found)) {
-      const merged = { ...PROFILE_DEFAULTS, ...found, weights: normalizeWeights(found.weights) };
-      setProfile(merged);
-      setProfileForm(merged);
-      applyProfileToMatching(merged);
-    } else {
-      // First action after login: nudge the parent to finish their profile.
+    } else if (onboardingState.status === 'required') {
       setProfile(null);
-      setProfileForm({ ...PROFILE_DEFAULTS, ...(found || {}), weights: normalizeWeights(found?.weights), enrolMonth: found?.enrolMonth || nextMonthValue() });
-      setPage('Family profile');
-      notify('Welcome! Please finish your family profile first.');
+      setProfileId(onboardingState.profileId);
+      setProfileName(onboardingState.profileName);
+      if (onboardingState.draft) {
+        setProfileForm({
+          ...PROFILE_DEFAULTS,
+          ...onboardingState.draft,
+          enrolMonth: onboardingState.draft.enrolMonth || nextMonthValue(),
+          weights: normalizeWeights(onboardingState.draft.weights),
+        });
+      }
+    } else if (onboardingState.status === 'guest') {
+      setProfile(null);
+      setProfileId(null);
+      setProfileName('My family profile');
+      setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
     }
-  };
+  }, [onboardingState]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [selectedCentre, setSelectedCentre] = useState(null);
   const [authMode, setAuthMode] = useState('login');
@@ -594,46 +634,61 @@ function App() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-    console.log(
-  "Firebase authentication state:",
-  user ? user.email : "No user signed in"
-);
+      console.log(
+        "Firebase authentication state:",
+        user ? user.email : "No user signed in"
+      );
 
-setCurrentUser(user);
+      setCurrentUser(user);
 
-// Hide the login screen if Firebase restores the signed-in user.
-if (user) {
-  setAuthMode('');
-}
+      if (!user) {
+        controller.cancel();
+        setWatchlistEntries([]);
+        setPage('Overview');
+        return;
+      }
 
-if (!user) {
-  setWatchlistEntries([]);
-  setProfile(null);
-  setProfileId(null);
-  setProfileName('My family profile');
-  setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
-  return;
-}
+      const isGoogle =
+        user.providerId === 'google.com' ||
+        (Array.isArray(user.providerData) &&
+          user.providerData.some((p) => p.providerId === 'google.com'));
+      const isVerified = Boolean(user.emailVerified) || isGoogle;
 
+      if (!isVerified) {
+        controller.start(user);
+        return;
+      }
+
+      setAuthMode('');
+      controller.start(user);
+    });
+
+    return () => {
+      unsubscribe();
+      controller.cancel();
+    };
+  }, [controller]);
+
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    const isGoogle =
+      currentUser.providerId === 'google.com' ||
+      (Array.isArray(currentUser.providerData) &&
+        currentUser.providerData.some((p) => p.providerId === 'google.com'));
+    const isVerified = Boolean(currentUser.emailVerified) || isGoogle;
+    if (!isVerified) return undefined;
+
+    let cancelled = false;
+    async function syncWatchlist() {
       try {
-        try {
-          await getMyProfile();
-        } catch (profileError) {
-          if (String(profileError.message).includes('404')) {
-            await createMyProfile(user.displayName || user.email?.split('@')[0] || 'Parent');
-          } else {
-            throw profileError;
-          }
-        }
-
         const watchlist = await getMyWatchlist();
+        if (cancelled) return;
         const entries = Array.isArray(watchlist)
           ? watchlist
           : (watchlist?.items || watchlist?.entries || []);
         setWatchlistEntries(entries);
         setWatchlistLoaded(true);
 
-        // Keep browser-saved favourites even if the backend watchlist fails.
         setSaved((currentSaved) => {
           const backendIds = entries.map((entry) => Number(entry.centre_id)).filter(Number.isFinite);
           const localIds = currentSaved.map(Number).filter(Number.isFinite);
@@ -648,14 +703,12 @@ if (!user) {
           return merged;
         });
       } catch (error) {
-        console.warn('Backend profile/watchlist sync:', error.message);
+        console.warn('Backend watchlist sync:', error.message);
       }
-
-      await loadFamilyProfile(user);
-    });
-
-    return unsubscribe;
-  }, []);
+    }
+    syncWatchlist();
+    return () => { cancelled = true; };
+  }, [currentUser]);
 
   const toastTimer = useRef(null);
   const notify = (message, ms = 2600) => {
@@ -837,27 +890,46 @@ if (!user) {
     }
   };
 
+  const isAdmin =
+    onboardingState.status === 'admin' ||
+    currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
+  const isOnboardingGated =
+    Boolean(currentUser) && onboardingState.status !== 'ready' && !isAdmin;
+
+  useEffect(() => {
+    if (isOnboardingGated) {
+      setSelectedCentre(null);
+      setScoreInfoOpen(false);
+    }
+  }, [isOnboardingGated]);
+
   const openPage = (nextPage) => {
-  if (
-    ['Preschool directory', 'My watchlist', 'Family profile', 'Find my matches'].includes(nextPage) &&
-    !currentUser
-  ) {
-    setAuthMode('login');
-    notify('Please sign in to access this feature.');
-    setMobileOpen(false);
-    return;
-  }
+    if (isOnboardingGated) {
+      notify('Please complete your family profile to access this feature.');
+      setMobileOpen(false);
+      return;
+    }
 
-  if (nextPage === 'Find my matches' && !profile) {
-    setPage('Family profile');
-    notify('Finish your family profile first. Matches are built from it.');
-    setMobileOpen(false);
-    return;
-  }
+    if (
+      ['Preschool directory', 'My watchlist', 'Family profile', 'Find my matches'].includes(nextPage) &&
+      !currentUser
+    ) {
+      setAuthMode('login');
+      notify('Please sign in to access this feature.');
+      setMobileOpen(false);
+      return;
+    }
 
-  setPage(nextPage);
-  setMobileOpen(false);
-};
+    if (nextPage === 'Find my matches' && !profile) {
+      setPage('Family profile');
+      notify('Finish your family profile first. Matches are built from it.');
+      setMobileOpen(false);
+      return;
+    }
+
+    setPage(nextPage);
+    setMobileOpen(false);
+  };
 
   const handleAuthSubmit = async (event) => {
     event.preventDefault();
@@ -883,14 +955,11 @@ if (!user) {
         }
 
         await sendEmailVerification(result.user);
-        try {
-          await createMyProfile(name || result.user.displayName || email.split('@')[0]);
-        } catch (apiError) {
-          console.warn('Backend profile registration:', apiError.message);
-        }
         await signOut(auth);
 
-        notify('Account created. Please verify your email.');
+        notify('Account created. Please verify your email before signing in.');
+        setAuthMode('login');
+        return;
       } else if (authMode === 'login') {
         const result = await signInWithEmailAndPassword(auth, email, password);
 
@@ -935,6 +1004,7 @@ if (!user) {
 
   const handleSignOut = async () => {
     try {
+      controller.cancel();
       await signOut(auth);
       setAuthMode('login');
       setPage('Overview');
@@ -1263,37 +1333,12 @@ if (!user) {
 
   const saveProfile = async (event) => {
     event.preventDefault();
-    const f = profileForm;
-    if (!currentUser) { setAuthMode('login'); notify('Please sign in to save your profile.'); return; }
-    const validationErrors = validateFamilyProfile(f);
-    if (validationErrors.length > 0) {
-      notify(validationErrors[0]);
+    if (!currentUser) {
+      setAuthMode('login');
+      notify('Please sign in to save your profile.');
       return;
     }
-
-    const wasFirstTime = !profile;
-    const next = { ...f, budget: Number(f.budget), enrolMonth: f.enrolMonth || nextMonthValue() };
-    setProfileSaving(true);
-    try { localStorage.setItem(profileKey(currentUser.uid), JSON.stringify(next)); } catch { /* ignore */ }
-
-    let synced = true;
-    try {
-      const payload = toApiProfile(next, profileName);
-      const result = profileId
-        ? await updateFamilyProfile(profileId, payload)
-        : await createFamilyProfile(payload);
-      if (result?.profile_id) setProfileId(result.profile_id);
-      if (result?.profile_name) setProfileName(result.profile_name);
-    } catch (error) {
-      synced = false;
-      console.warn('Family profile sync:', error.message);
-    }
-
-    setProfile(next);
-    applyProfileToMatching(next);
-    setProfileSaving(false);
-    notify(synced ? 'Profile saved. Your matches now use it.' : 'Profile saved on this device (could not reach the server).');
-    if (wasFirstTime) setPage('Find my matches');
+    await controller.save(profileForm);
   };
 
   // Matches run automatically from the saved profile.
@@ -1394,11 +1439,13 @@ if (!user) {
         <div className="side-label">YOUR SPACE</div>
 
         <nav>
-          {nav.filter((item) => item.label !== 'Admin dashboard' || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com').map((item) => (
+          {nav.filter((item) => item.label !== 'Admin dashboard' || isAdmin).map((item) => (
             <button
               key={item.label}
               className={`nav-item ${page === item.label ? 'active' : ''}`}
               onClick={() => openPage(item.label)}
+              disabled={isOnboardingGated}
+              style={isOnboardingGated ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
             >
               <item.icon size={18} />
               <span>{item.label}</span>
@@ -1439,7 +1486,7 @@ if (!user) {
             <Menu />
           </button>
           <div className="breadcrumb">
-            Home <ChevronRight size={14} /> <b>{page}</b>
+            Home <ChevronRight size={14} /> <b>{isOnboardingGated ? 'Onboarding' : page}</b>
           </div>
           <div className="top-actions">
             <span className="today-label">Your family's next big step starts here</span>
@@ -1575,7 +1622,196 @@ if (!user) {
             </div>
           )}
 
-          {page === 'Overview' && (
+          {isOnboardingGated ? (
+            <section className="onboarding-flow">
+              {onboardingState.status === 'verification-required' && (
+                <div className="panel onboarding-panel">
+                  <div className="eyebrow"><Baby size={16} /> EMAIL VERIFICATION REQUIRED</div>
+                  <h2>Verify your email address</h2>
+                  <p className="lead">
+                    We sent a verification link to <strong>{currentUser?.email}</strong>.
+                    Please click the link in your email to verify your account, then sign in again.
+                  </p>
+                  <div className="onboarding-actions">
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      onClick={async () => {
+                        try {
+                          await sendEmailVerification(currentUser);
+                          notify('Verification email sent! Check your inbox.');
+                        } catch (err) {
+                          notify(err.message);
+                        }
+                      }}
+                    >
+                      Resend verification email
+                    </button>
+                    <button type="button" className="secondary-btn" onClick={handleSignOut}>
+                      <LogOut size={15} /> Sign out
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {onboardingState.status === 'loading' && (
+                <div className="panel onboarding-panel">
+                  <div className="eyebrow"><Sparkles size={16} /> ONE MOMENT</div>
+                  <h2>Loading your profile…</h2>
+                  <p className="lead">Checking your family preferences and account details.</p>
+                  <div className="onboarding-actions">
+                    <button type="button" className="secondary-btn" onClick={handleSignOut}>
+                      <LogOut size={15} /> Sign out
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {onboardingState.status === 'error' && !onboardingState.draft && (
+                <div className="panel onboarding-panel error-panel">
+                  <div className="eyebrow"><CircleHelp size={16} /> COULD NOT LOAD PROFILE</div>
+                  <h2>Unable to load family profile</h2>
+                  <p className="lead">{onboardingState.error || 'A service error occurred while retrieving your profile.'}</p>
+                  <div className="onboarding-actions">
+                    <button type="button" className="primary-btn" onClick={() => controller.start(currentUser)}>
+                      Try again
+                    </button>
+                    <button type="button" className="secondary-btn" onClick={handleSignOut}>
+                      <LogOut size={15} /> Sign out
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {(onboardingState.status === 'required' || onboardingState.status === 'saving' || (onboardingState.status === 'error' && onboardingState.draft)) && (
+                <>
+                  <PageTitle
+                    eyebrow="REQUIRED FAMILY PROFILE SETUP"
+                    title="Complete your family profile"
+                    subtitle="Tell us once about your child, location and budget before entering KidCare Match. Matches and commute estimates are built from this profile."
+                  />
+
+                  {onboardingState.error && (
+                    <div className="error-banner" role="alert">
+                      <b>Could not save profile:</b> {onboardingState.error}
+                      <span>Please check your details and try saving again.</span>
+                    </div>
+                  )}
+
+                  <form className="profile-form panel" onSubmit={saveProfile}>
+                    <div className="form-section">
+                      <h3><Baby size={19} /> Child information</h3>
+                      <div className="form-grid">
+                        <label>Child's level
+                          <select value={profileForm.level} onChange={(e) => setField('level', e.target.value)}>
+                            {Object.entries(LEVEL_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>Citizenship (for fees)
+                          <select value={profileForm.citizenship} onChange={(e) => setField('citizenship', e.target.value)}>
+                            {Object.entries(CITIZENSHIP_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>Required care type
+                          <select value={profileForm.service} onChange={(e) => setField('service', e.target.value)}>
+                            <option>Full Day</option>
+                            <option>Half Day</option>
+                          </select>
+                        </label>
+                        <label>Desired enrolment month
+                          <input type="month" value={profileForm.enrolMonth} onChange={(e) => setField('enrolMonth', e.target.value)} />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="form-section">
+                      <h3><MapPin size={19} /> Location</h3>
+                      <div className="form-grid">
+                        <label>Home postal code
+                          <input
+                            value={profileForm.home} maxLength={6} inputMode="numeric"
+                            placeholder="6-digit postal code"
+                            onChange={(e) => setField('home', e.target.value.replace(/\D/g, ''))}
+                          />
+                        </label>
+                        <label>Workplace postal code (optional)
+                          <input
+                            value={profileForm.work} maxLength={6} inputMode="numeric"
+                            placeholder="6-digit postal code"
+                            onChange={(e) => setField('work', e.target.value.replace(/\D/g, ''))}
+                          />
+                        </label>
+                        <label>Preferred location
+                          <select value={profileForm.locationPref} onChange={(e) => setField('locationPref', e.target.value)}>
+                            {Object.entries(LOCATION_PREF_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="form-section">
+                      <h3><Wallet size={19} /> Budget & priorities</h3>
+                      <div className="form-grid">
+                        <label>Monthly budget (SGD)
+                          <input
+                            type="number" min="1" value={profileForm.budget}
+                            onChange={(e) => setField('budget', e.target.value)}
+                          />
+                        </label>
+                        <label>Household members (optional)
+                          <input
+                            type="number" min="1" value={profileForm.members}
+                            onChange={(e) => setField('members', e.target.value)}
+                          />
+                        </label>
+                        <label>Gross monthly household income, SGD (optional)
+                          <input
+                            type="number" min="0" value={profileForm.income}
+                            onChange={(e) => setField('income', e.target.value)}
+                          />
+                        </label>
+                      </div>
+
+                      <div className="weight-title">
+                        <h4 className="title-with-help">What matters most? <button
+                          type="button"
+                          className="info-btn small"
+                          aria-label="How match scores work"
+                          aria-haspopup="dialog"
+                          onClick={() => setScoreInfoOpen(true)}
+                        >
+                          <CircleHelp size={12} />
+                        </button></h4><span>Rank 1 = 50% · 2 = 35% · 3 = 15%</span>
+                      </div>
+                      <PriorityRanking weights={profileForm.weights} onChange={updateProfileRank} />
+                    </div>
+
+                    <div className="form-footer">
+                      <span className="fine-print">
+                        Saved to your account and confirmed by the server before proceeding.
+                      </span>
+                      <div className="form-footer-buttons">
+                        <button type="button" className="secondary-btn" onClick={handleSignOut}>
+                          <LogOut size={15} /> Sign out
+                        </button>
+                        <button type="submit" className="primary-btn" disabled={onboardingState.status === 'saving'}>
+                          {onboardingState.status === 'saving' ? 'Saving…' : 'Save profile'} <Check size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                </>
+              )}
+            </section>
+          ) : (
+            <>
+              {page === 'Overview' && (
             <>
               <section className="welcome-row">
                 <div>
@@ -2317,9 +2553,11 @@ if (!user) {
           )}
 
           {page === 'Admin dashboard' && (
-            currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com'
+            isAdmin
               ? <AdminDashboard />
               : <section className="panel"><h2>Administrator access required</h2><p>Sign in with the authorised administrator account to access this area.</p><button className="primary-btn" onClick={() => { setPage('Overview'); setAuthMode('login'); }}>Sign in</button></section>
+          )}
+            </>
           )}
         </div>
 
@@ -2329,7 +2567,7 @@ if (!user) {
         </footer>
       </main>
 
-      {scoreInfoOpen && (
+      {scoreInfoOpen && !isOnboardingGated && (
         <div className="modal-backdrop" onClick={() => setScoreInfoOpen(false)}>
           <section
             className="info-modal"
@@ -2367,7 +2605,7 @@ if (!user) {
         </div>
       )}
 
-      {selectedCentre && (
+      {selectedCentre && !isOnboardingGated && (
         <div className="modal-backdrop" onClick={() => setSelectedCentre(null)}>
           <section className="detail-modal" onClick={(event) => event.stopPropagation()}>
             <button className="modal-close" onClick={() => setSelectedCentre(null)}>
