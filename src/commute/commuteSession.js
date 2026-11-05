@@ -20,8 +20,8 @@ export function getSessionMode(userId = null) {
 export function setSessionMode(userId, mode) {
   if (userId) {
     activeSessionUserId = userId;
-    activeSessionMode = mode || "drive";
   }
+  activeSessionMode = mode || "drive";
 }
 
 export function resetSessionMode() {
@@ -30,6 +30,8 @@ export function resetSessionMode() {
 }
 
 export const resetCommuteSessionMode = resetSessionMode;
+export const resetRetainedSessionMode = resetSessionMode;
+export const getRetainedSessionMode = getSessionMode;
 
 /**
  * Commute session controller.
@@ -38,7 +40,7 @@ export const resetCommuteSessionMode = resetSessionMode;
 export function createCommuteSession({
   loadCommute = defaultGetCentreCommute,
   onState = () => {},
-  initialMode = "drive",
+  initialMode = activeSessionMode,
   userId = null,
 }) {
   let mode = initialMode;
@@ -187,14 +189,14 @@ export function createCommuteSession({
         activeController.abort();
         activeController = null;
       }
+      mode = "drive";
+      resetSessionMode();
       centreId = null;
       profileId = null;
       samplePair = null;
       loading = false;
       error = null;
       data = null;
-      mode = "drive";
-      resetSessionMode();
       emit();
     },
 

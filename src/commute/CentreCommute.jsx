@@ -25,6 +25,21 @@ export function formatDistance(meters) {
   return `${km} km`;
 }
 
+export function formatSampleDate(isoString) {
+  if (!isoString) return "";
+  try {
+    const d = new Date(isoString);
+    return d.toLocaleDateString("en-SG", {
+      timeZone: "Asia/Singapore",
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return "";
+  }
+}
+
 export function CentreCommuteView({
   currentUser,
   profileId,
@@ -127,7 +142,7 @@ export function CentreCommuteView({
           className={`commute-mode-btn ${mode === "pt" ? "active" : ""}`}
           onClick={() => onModeChange && onModeChange("pt")}
         >
-          Transit
+          Public transport
         </button>
         <button
           type="button"
@@ -176,6 +191,15 @@ export function CentreCommuteView({
               >
                 Edit family profile
               </button>
+            </div>
+          )}
+
+          {sample?.kind === "weekday" && (
+            <div className="commute-sample-label" role="note" aria-label="Sample conditions">
+              <span className="commute-sample-badge">Representative Wednesday 08:00 SGT</span>
+              {sample.sampled_at && (
+                <span className="commute-sample-date"> ({formatSampleDate(sample.sampled_at)})</span>
+              )}
             </div>
           )}
 
@@ -237,23 +261,48 @@ export function CentreCommuteView({
 
               return (
                 <div key={idx} className="commute-leg-item">
-                  <div className="commute-leg-header">
-                    <span
-                      className={`commute-leg-indicator ${isLeg1 ? "indicator-solid-blue" : "indicator-dashed-green"}`}
-                      aria-hidden="true"
-                    />
-                    <strong>{legTitle}</strong>
+                  <div className="commute-leg-main">
+                    <div className="commute-leg-header">
+                      <span
+                        className={`commute-leg-indicator ${isLeg1 ? "indicator-solid-blue" : "indicator-dashed-green"}`}
+                        aria-hidden="true"
+                      />
+                      <strong>{legTitle}</strong>
+                    </div>
+                    {isAvailable ? (
+                      <span className="commute-leg-metrics">
+                        {formatDuration(leg.duration_seconds)} ({formatDistance(leg.distance_meters)})
+                      </span>
+                    ) : (
+                      <div className="commute-leg-failed">
+                        <span>Route unavailable for {isLeg1 ? "Home → Centre" : "Centre → Workplace"}</span>
+                        <button type="button" className="retry-route-btn" onClick={onRetry || undefined}>
+                          Retry route
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  {isAvailable ? (
-                    <span className="commute-leg-metrics">
-                      {formatDuration(leg.duration_seconds)} ({formatDistance(leg.distance_meters)})
-                    </span>
-                  ) : (
-                    <div className="commute-leg-failed">
-                      <span>Route unavailable for {isLeg1 ? "Home → Centre" : "Centre → Workplace"}</span>
-                      <button type="button" className="retry-route-btn" onClick={onRetry || undefined}>
-                        Retry route
-                      </button>
+                  {isAvailable && Array.isArray(leg.transit_legs) && leg.transit_legs.length > 0 && (
+                    <div className="commute-transit-legs" aria-label="Transit segments">
+                      {leg.transit_legs.map((sub, sIdx) => {
+                        const isWalk = sub.mode === "WALK";
+                        const subTitle = isWalk
+                          ? "Walk"
+                          : sub.route
+                          ? `Transit (${sub.route})`
+                          : "Transit";
+                        return (
+                          <div key={sIdx} className="commute-transit-subleg">
+                            <span className="commute-subleg-type">{subTitle}: </span>
+                            <span className="commute-subleg-metrics">
+                              {formatDuration(sub.duration_seconds)} ({formatDistance(sub.distance_meters)})
+                            </span>
+                            {sub.instruction && (
+                              <span className="commute-subleg-instruction"> ({sub.instruction})</span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

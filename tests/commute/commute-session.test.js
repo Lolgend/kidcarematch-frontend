@@ -4,6 +4,7 @@ import {
   getSessionMode,
   setSessionMode,
   resetSessionMode,
+  resetRetainedSessionMode,
 } from "../../src/commute/commuteSession.js";
 
 describe("createCommuteSession controller", () => {
@@ -43,6 +44,7 @@ describe("createCommuteSession controller", () => {
   });
 
   beforeEach(() => {
+    resetRetainedSessionMode();
     states = [];
     loadCommute = vi.fn().mockImplementation(async (centreId, { mode }) => {
       return mockCommute(centreId, mode);
@@ -313,5 +315,23 @@ describe("createCommuteSession controller", () => {
 
     // Sign out (null user) resets to default drive
     expect(getSessionMode(null)).toBe("drive");
+  });
+
+  it("preserves retained mode across session instances until reset", async () => {
+    const session1 = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+    });
+    await session1.open({ centreId: 101, profileId: "prof-1" });
+    await session1.setMode("pt");
+
+    const session2 = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+    });
+    expect(session2.getMode()).toBe("pt");
+
+    session2.reset();
+    expect(session2.getMode()).toBe("drive");
   });
 });
