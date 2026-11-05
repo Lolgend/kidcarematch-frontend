@@ -118,6 +118,24 @@ export const getCentreLocation = (centreId, options = {}) =>
     options
   );
 
+export const getCentreCommute = (
+  centreId,
+  { profileId, mode = "drive", samplePair = null } = {},
+  options = {}
+) =>
+  apiRequest(
+    `/api/v1/centres/${encodeURIComponent(centreId)}/commute`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        profile_id: profileId,
+        mode,
+        ...(samplePair ? { sample_pair: samplePair } : {}),
+      }),
+      ...options,
+    }
+  );
+
 // ==========================================
 // CENTRE REVIEWS
 // ==========================================

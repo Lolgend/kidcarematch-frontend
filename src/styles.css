@@ -317,3 +317,168 @@
 .guest-signin-btn:hover {
   background: #31643f;
 }
+
+.centre-commute-profile-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #fdfaf3;
+  border: 1px solid #ebdcb9;
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #7c5e21;
+}
+
+.centre-commute-profile-prompt p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.commute-mode-selector {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.commute-mode-btn {
+  background: #f3f5f2;
+  border: 1px solid #d8dfd5;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #4b584e;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.commute-mode-btn:hover {
+  background: #e6ece4;
+}
+
+.commute-mode-btn.active {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+.commute-unresolvable-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #fff4f4;
+  border: 1px solid #fed7d7;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #c53030;
+}
+
+.commute-unresolvable-warning p {
+  margin: 0;
+}
+
+.commute-breakdown {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.commute-leg-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #fafbfa;
+  border: 1px solid #e5ebe3;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.commute-leg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.commute-leg-indicator {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.indicator-solid-blue {
+  background: #2563eb;
+}
+
+.indicator-dashed-green {
+  border-top: 3px dashed #059669;
+}
+
+.commute-leg-metrics {
+  font-weight: 600;
+  color: #2c3830;
+}
+
+.commute-leg-failed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #c53030;
+}
+
+.commute-totals {
+  background: #eef5ec;
+  border: 1px solid #d3e4d0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-top: 4px;
+}
+
+.commute-totals-value {
+  font-size: 13px;
+  color: #2b5533;
+}
+
+.commute-totals-note {
+  display: block;
+  font-size: 11px;
+  color: #55775c;
+  margin-top: 2px;
+}
+
+.commute-totals-unavailable {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fdfaf3;
+  border: 1px solid #ebdcb9;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #8c6a28;
+}
+
+.retry-route-btn {
+  background: #e2e8f0;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+}
+
+.retry-route-btn:hover {
+  background: #cbd5e1;
+}
