@@ -10,6 +10,7 @@ describe("Administrator dashboard operation contracts", () => {
 
   beforeEach(async () => {
     vi.resetModules();
+    vi.stubEnv("VITE_API_URL", "https://api.invalid/");
     vi.stubEnv("VITE_API_BASE_URL", "https://admin.invalid/");
     auth.currentUser = { getIdToken: vi.fn().mockResolvedValue("synthetic-admin-token") };
     fetchMock = failClosedFetch(vi);
