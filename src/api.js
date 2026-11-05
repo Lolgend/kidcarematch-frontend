@@ -112,6 +112,12 @@ export const getCentreByCode = (code) =>
     `/api/v1/centres/code/${encodeURIComponent(code)}`
   );
 
+export const getCentreLocation = (centreId, options = {}) =>
+  apiRequest(
+    `/api/v1/centres/${encodeURIComponent(centreId)}/location`,
+    options
+  );
+
 // ==========================================
 // CENTRE REVIEWS
 // ==========================================
