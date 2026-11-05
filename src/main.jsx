@@ -44,6 +44,22 @@ import {
   createFamilyProfile,
   updateFamilyProfile
 } from './api';
+import {
+  PROFILE_DEFAULTS,
+  WEIGHT_KEYS,
+  WEIGHT_LABELS,
+  RANK_WEIGHTS,
+  priorityOrder,
+  weightsFromOrder,
+  normalizeWeights,
+  setRank,
+  weightsFromCostShare,
+  nextMonthValue,
+  validateFamilyProfile,
+  isProfileComplete,
+  toApiProfile,
+  fromApiProfile
+} from './profile/familyProfile';
 import './styles.css';
 
 function mapCentre(centre = {}) {
@@ -176,96 +192,7 @@ function locationFit(postal, anchors) {
   return { score: 0, label: 'Further away' };
 }
 
-// ---- Family profile: the single source of truth for matching ----
-const nextMonthValue = () => {
-  const d = new Date();
-  d.setMonth(d.getMonth() + 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-};
-const PROFILE_DEFAULTS = {
-  level: 'n1', citizenship: 'SC', service: 'Full Day', enrolMonth: '',
-  home: '', work: '', locationPref: 'HOME', income: '', members: '',
-  budget: 750, weights: { vacancy: 50, cost: 35, travel: 15 }
-};
 const profileKey = (uid) => `kidcare-profile:${uid}`;
-const isProfileComplete = (p) =>
-  Boolean(p && /^\d{6}$/.test(p.home || '') && p.level && p.citizenship && Number(p.budget) > 0);
-
-// Backend stores only cost/travel weights (summing to 1); vacancy weight is kept locally.
-function toApiProfile(p) {
-  const ct = p.weights.cost + p.weights.travel;
-  const cost = ct ? Math.round((p.weights.cost / ct) * 100) / 100 : 0.5;
-  return {
-    profile_name: 'My family profile',
-    level: p.level,
-    citizenship_status: p.citizenship,
-    service_required: p.service || 'Full Day',
-    home_postal_code: p.home,
-    workplace_postal_code: p.work || null,
-    location_preference: p.locationPref,
-    household_income: Number(p.income) || 0,
-    household_member_count: Math.max(1, Number(p.members) || 1),
-    budget_max: Number(p.budget),
-    enrollment_month_year: p.enrolMonth || nextMonthValue(),
-    cost_weight: cost,
-    travel_weight: Math.round((1 - cost) * 100) / 100
-  };
-}
-function fromApiProfile(api, local) {
-  return {
-    ...PROFILE_DEFAULTS,
-    level: api.level,
-    citizenship: api.citizenship_status,
-    service: api.service_required,
-    home: api.home_postal_code,
-    work: api.workplace_postal_code || '',
-    locationPref: api.location_preference,
-    income: api.household_income ? String(api.household_income) : '',
-    members: api.household_member_count ? String(api.household_member_count) : '',
-    budget: Number(api.budget_max),
-    enrolMonth: api.enrollment_month_year,
-    weights: local?.weights ? normalizeWeights(local.weights) : weightsFromCostShare(Number(api.cost_weight))
-  };
-}
-// Priorities are ranked 1-3 and each rank has a preset weight: 50% / 35% / 15%.
-// Weights stay stored as { vacancy, cost, travel } so scoring and the saved profile work as before.
-const WEIGHT_KEYS = ['vacancy', 'cost', 'travel'];
-const WEIGHT_LABELS = { vacancy: 'Vacancy fit', cost: 'Cost fit', travel: 'Travel fit' };
-const RANK_WEIGHTS = [50, 35, 15];
-
-// Most important first. Ties (e.g. old 30/30 weights) keep the default order.
-function priorityOrder(weights) {
-  return [...WEIGHT_KEYS].sort(
-    (a, b) => (Number(weights?.[b]) || 0) - (Number(weights?.[a]) || 0) || WEIGHT_KEYS.indexOf(a) - WEIGHT_KEYS.indexOf(b)
-  );
-}
-function weightsFromOrder(order) {
-  return Object.fromEntries(WEIGHT_KEYS.map((key) => [key, RANK_WEIGHTS[order.indexOf(key)]]));
-}
-// Snap any weights (e.g. a profile saved with the old sliders) to the nearest ranking.
-const normalizeWeights = (weights) => weightsFromOrder(priorityOrder(weights));
-// Give `key` the chosen rank (0-based); the factor that held that rank takes its old one.
-function setRank(weights, key, rank) {
-  const order = priorityOrder(weights);
-  const from = order.indexOf(key);
-  [order[from], order[rank]] = [order[rank], order[from]];
-  return weightsFromOrder(order);
-}
-// The backend keeps only the cost : travel split. The six possible rankings all give a
-// different split (0.70, 0.30, 0.77, 0.23, 0.59, 0.41), so the ranking can be recovered from it.
-function weightsFromCostShare(share) {
-  const target = Number.isFinite(share) ? share : 0.7;
-  const [a, b, c] = WEIGHT_KEYS;
-  const orders = [[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]];
-  let best = weightsFromOrder(orders[0]);
-  let bestDiff = Infinity;
-  orders.forEach((order) => {
-    const w = weightsFromOrder(order);
-    const diff = Math.abs(w.cost / (w.cost + w.travel) - target);
-    if (diff < bestDiff - 1e-9) { best = w; bestDiff = diff; }
-  });
-  return best;
-}
 const LOCATION_PREF_LABELS = { HOME: 'Near home', WORKPLACE: 'Near workplace', EITHER: 'Near home or workplace' };
 
 // Districts come from GET /api/v1/centres/districts (first 2 digits of the postal code)
@@ -570,6 +497,7 @@ function App() {
   const [toast, setToast] = useState('');
   const [profile, setProfile] = useState(null); // the saved family profile (null = not set up yet)
   const [profileId, setProfileId] = useState(null);
+  const [profileName, setProfileName] = useState('My family profile');
   const [profileForm, setProfileForm] = useState(() => ({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() }));
   const [profileSaving, setProfileSaving] = useState(false);
   const setField = (key, value) => setProfileForm((current) => ({ ...current, [key]: value }));
@@ -596,6 +524,9 @@ function App() {
       if (Array.isArray(list) && list.length) {
         found = fromApiProfile(list[0], local);
         setProfileId(list[0].profile_id);
+        if (list[0].profile_name) {
+          setProfileName(list[0].profile_name);
+        }
       }
     } catch (error) {
       console.warn('Family profile load:', error.message);
@@ -679,6 +610,7 @@ if (!user) {
   setWatchlistEntries([]);
   setProfile(null);
   setProfileId(null);
+  setProfileName('My family profile');
   setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
   return;
 }
@@ -1165,12 +1097,12 @@ if (!user) {
       setProfileForm((form) => ({ ...form, weights }));
       try { localStorage.setItem(profileKey(currentUser.uid), JSON.stringify(next)); } catch { /* ignore */ }
       if (profileId) {
-        try { await updateFamilyProfile(profileId, toApiProfile(next)); }
+        try { await updateFamilyProfile(profileId, toApiProfile(next, profileName)); }
         catch (error) { console.warn('Priority sync:', error.message); }
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [weights, profile, profileId, currentUser]);
+  }, [weights, profile, profileId, profileName, currentUser]);
 
   const filtered = useMemo(() => {
     return centres.filter((centre) => {
@@ -1333,13 +1265,11 @@ if (!user) {
     event.preventDefault();
     const f = profileForm;
     if (!currentUser) { setAuthMode('login'); notify('Please sign in to save your profile.'); return; }
-    if (!/^\d{6}$/.test(f.home)) { notify('Enter your 6-digit home postal code.'); return; }
-    if (f.work && !/^\d{6}$/.test(f.work)) { notify('Workplace postal code must be 6 digits.'); return; }
-    if (['WORKPLACE', 'EITHER'].includes(f.locationPref) && !f.work) {
-      notify('Add your workplace postal code for this location preference.');
+    const validationErrors = validateFamilyProfile(f);
+    if (validationErrors.length > 0) {
+      notify(validationErrors[0]);
       return;
     }
-    if (!(Number(f.budget) > 0)) { notify('Enter a monthly budget.'); return; }
 
     const wasFirstTime = !profile;
     const next = { ...f, budget: Number(f.budget), enrolMonth: f.enrolMonth || nextMonthValue() };
@@ -1348,11 +1278,12 @@ if (!user) {
 
     let synced = true;
     try {
-      const payload = toApiProfile(next);
+      const payload = toApiProfile(next, profileName);
       const result = profileId
         ? await updateFamilyProfile(profileId, payload)
         : await createFamilyProfile(payload);
-      setProfileId(result.profile_id);
+      if (result?.profile_id) setProfileId(result.profile_id);
+      if (result?.profile_name) setProfileName(result.profile_name);
     } catch (error) {
       synced = false;
       console.warn('Family profile sync:', error.message);
