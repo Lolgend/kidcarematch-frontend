@@ -61,4 +61,3 @@ Source references are frontend src/api.js, src/admin/AdminDashboard.jsx, src/adm
 ## Scope and limits
 
 No app source, application config/dependencies, backend file or UI behavior was changed. No live API, Firebase, source probe, ECDA sync, review write, administrator mutation, browser, accessibility tool or app launch was performed. Wrapper tests verify request construction and controlled response handling; they do not verify API deployment, server-side authorization, Review/report policy, rendered UI, cancellation dialogs, storage behavior, or safe recovery in an actual administrator session. Accessible UI, browser matrix, screen-reader, performance and real write paths remain explicit gaps. The report does not establish that mocked 401/403 decisions are enforced by the backend.
-
