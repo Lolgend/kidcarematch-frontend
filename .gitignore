@@ -71,4 +71,6 @@ node_modules/
 # Test results and scratch
 test-results/
 .scratch/
+.worktrees/
+
 
