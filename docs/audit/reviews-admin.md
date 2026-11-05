@@ -8,7 +8,7 @@ npm run test:unit -- tests/api/reviews.test.js tests/api/admin-operations.test.j
 
 | Wrapper | Statements | Branches | Functions | Lines |
 |---|---:|---:|---:|---:|
-| src/api.js | 86.45% | 86.84% | 34.61% | 86.45% |
+| src/api.js | 82.86% | 82.85% | 34.61% | 82.86% |
 | src/admin/adminApi.js | 63.46% | 57.14% | 100% | 63.46% |
 
 These are focused-slice, whole-wrapper figures, not feature-level or application coverage. In particular the admin helper's shared authentication/error branches are assigned to the concurrent helper-test slice; this report's admin test covers the dashboard's operation path/method/body catalog and signed-out no-request result. tests/api/reviews.test.js exercises every Review/report export at the shared fetch boundary: public list, own-by-centre retrieval, submission, report, own list, update, and delete. It covers encoded IDs, pagination query values, token/no-token, 201/202/204/partial responses, 401/403/404/422/500/503, text errors, token rejection, rejected fetch and JSON parse rejection. The fixtures intentionally do not assert review validation policy or moderation semantics.
