@@ -102,6 +102,35 @@ describe("getCentreCommute API client", () => {
     );
   });
 
+  it("supports walking and cycling mode payloads", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "walk" }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "cycle" }));
+
+    await api.getCentreCommute(101, { profileId: "prof-1", mode: "walk" });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.invalid/api/v1/centres/101/commute",
+      expect.objectContaining({
+        body: JSON.stringify({
+          profile_id: "prof-1",
+          mode: "walk",
+        }),
+      })
+    );
+
+    await api.getCentreCommute(101, { profileId: "prof-1", mode: "cycle" });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.invalid/api/v1/centres/101/commute",
+      expect.objectContaining({
+        body: JSON.stringify({
+          profile_id: "prof-1",
+          mode: "cycle",
+        }),
+      })
+    );
+  });
+
   it("rejects on HTTP error response", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(vi, { detail: "Preference profile not found" }, 404)

@@ -1,15 +1,37 @@
 import { useEffect, useRef, useState } from "react";
 import { getCentreCommute as defaultGetCentreCommute } from "../api";
 
-let retainedSessionMode = "drive";
+let activeSessionUserId = null;
+let activeSessionMode = "drive";
 
-export function getRetainedSessionMode() {
-  return retainedSessionMode;
+export function getSessionMode(userId = null) {
+  if (!userId) {
+    activeSessionUserId = null;
+    activeSessionMode = "drive";
+    return "drive";
+  }
+  if (activeSessionUserId !== userId) {
+    activeSessionUserId = userId;
+    activeSessionMode = "drive";
+  }
+  return activeSessionMode;
 }
 
-export function resetRetainedSessionMode() {
-  retainedSessionMode = "drive";
+export function setSessionMode(userId, mode) {
+  if (userId) {
+    activeSessionUserId = userId;
+  }
+  activeSessionMode = mode || "drive";
 }
+
+export function resetSessionMode() {
+  activeSessionUserId = null;
+  activeSessionMode = "drive";
+}
+
+export const resetCommuteSessionMode = resetSessionMode;
+export const resetRetainedSessionMode = resetSessionMode;
+export const getRetainedSessionMode = getSessionMode;
 
 /**
  * Commute session controller.
@@ -18,7 +40,8 @@ export function resetRetainedSessionMode() {
 export function createCommuteSession({
   loadCommute = defaultGetCentreCommute,
   onState = () => {},
-  initialMode = retainedSessionMode,
+  initialMode = activeSessionMode,
+  userId = null,
 }) {
   let mode = initialMode;
   let selectedSampleKind = "single";
@@ -143,7 +166,7 @@ export function createCommuteSession({
     async setMode(newMode) {
       if (mode === newMode) return;
       mode = newMode;
-      retainedSessionMode = newMode;
+      setSessionMode(userId, newMode);
       if (centreId && profileId) {
         await executeRequest();
       } else {
@@ -167,7 +190,7 @@ export function createCommuteSession({
         activeController = null;
       }
       mode = "drive";
-      retainedSessionMode = "drive";
+      resetSessionMode();
       centreId = null;
       profileId = null;
       samplePair = null;
@@ -190,11 +213,13 @@ export function createCommuteSession({
 export function useCommuteSession({
   centreId,
   profileId,
+  userId = null,
   loadCommute = defaultGetCentreCommute,
-  initialMode = retainedSessionMode,
+  initialMode,
 }) {
+  const currentMode = initialMode || getSessionMode(userId);
   const [state, setState] = useState({
-    mode: initialMode,
+    mode: currentMode,
     selectedSampleKind: "single",
     centreId,
     profileId,
@@ -209,8 +234,14 @@ export function useCommuteSession({
   if (!sessionRef.current) {
     sessionRef.current = createCommuteSession({
       loadCommute,
-      onState: setState,
-      initialMode,
+      onState: (nextState) => {
+        if (nextState.mode) {
+          setSessionMode(userId, nextState.mode);
+        }
+        setState(nextState);
+      },
+      initialMode: currentMode,
+      userId,
     });
   }
 

@@ -7,8 +7,16 @@ import { getCentreCommute as defaultGetCentreCommute, getCentreLocation as defau
 
 export function formatDuration(secs) {
   if (typeof secs !== "number") return "";
-  const mins = Math.max(1, Math.round(secs / 60));
-  return `${mins} min${mins === 1 ? "" : "s"}`;
+  const totalMins = Math.max(1, Math.round(secs / 60));
+  if (totalMins < 60) {
+    return `${totalMins} min${totalMins === 1 ? "" : "s"}`;
+  }
+  const hrs = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  if (mins === 0) {
+    return `${hrs} hr${hrs === 1 ? "" : "s"}`;
+  }
+  return `${hrs} hr${hrs === 1 ? "" : "s"} ${mins} min${mins === 1 ? "" : "s"}`;
 }
 
 export function formatDistance(meters) {
@@ -120,6 +128,8 @@ export function CentreCommuteView({
       <div className="commute-mode-selector" role="radiogroup" aria-label="Travel mode">
         <button
           type="button"
+          role="radio"
+          aria-checked={mode === "drive"}
           className={`commute-mode-btn ${mode === "drive" ? "active" : ""}`}
           onClick={() => onModeChange && onModeChange("drive")}
         >
@@ -127,6 +137,8 @@ export function CentreCommuteView({
         </button>
         <button
           type="button"
+          role="radio"
+          aria-checked={mode === "pt"}
           className={`commute-mode-btn ${mode === "pt" ? "active" : ""}`}
           onClick={() => onModeChange && onModeChange("pt")}
         >
@@ -134,17 +146,21 @@ export function CentreCommuteView({
         </button>
         <button
           type="button"
+          role="radio"
+          aria-checked={mode === "walk"}
           className={`commute-mode-btn ${mode === "walk" ? "active" : ""}`}
           onClick={() => onModeChange && onModeChange("walk")}
         >
-          Walk
+          Walking
         </button>
         <button
           type="button"
+          role="radio"
+          aria-checked={mode === "cycle"}
           className={`commute-mode-btn ${mode === "cycle" ? "active" : ""}`}
           onClick={() => onModeChange && onModeChange("cycle")}
         >
-          Cycle
+          Cycling
         </button>
       </div>
 
@@ -324,14 +340,17 @@ export default function CentreCommute({
   centreName = centre?.name || centre?.centre_name,
   currentUser = null,
   profileId = null,
+  userId = currentUser?.uid || currentUser?.user_id || currentUser?.id || currentUser?.email || null,
   onSignIn = null,
   onEditProfile = null,
   loadCommute = defaultGetCentreCommute,
   getCentreLocation = defaultGetCentreLocation,
 }) {
+  const effectiveUserId = userId || currentUser?.uid || currentUser?.user_id || currentUser?.id || currentUser?.email || null;
   const session = useCommuteSession({
     centreId: currentUser && profileId ? centreId : null,
     profileId: currentUser && profileId ? profileId : null,
+    userId: effectiveUserId,
     loadCommute,
   });
 

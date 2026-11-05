@@ -21,6 +21,7 @@ import {
 import { auth } from './firebase';
 import AdminDashboard from './admin/AdminDashboard';
 import CentreCommute from './commute/CentreCommute';
+import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
 import {
   getCentres,
@@ -644,6 +645,7 @@ function App() {
 
       if (!user) {
         controller.cancel();
+        resetSessionMode();
         setWatchlistEntries([]);
         setPage('Overview');
         return;
@@ -1006,6 +1008,7 @@ function App() {
   const handleSignOut = async () => {
     try {
       controller.cancel();
+      resetSessionMode();
       await signOut(auth);
       setAuthMode('login');
       setPage('Overview');

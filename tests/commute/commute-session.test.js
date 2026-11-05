@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCommuteSession,
+  getSessionMode,
+  setSessionMode,
+  resetSessionMode,
   resetRetainedSessionMode,
 } from "../../src/commute/commuteSession.js";
 
@@ -197,6 +200,121 @@ describe("createCommuteSession controller", () => {
     expect(latest.error).toBe(null);
     expect(latest.centreId).toBe(null);
     expect(latest.profileId).toBe(null);
+    expect(latest.mode).toBe("drive");
+    expect(session.getMode()).toBe("drive");
+  });
+
+  it("supports switching to walking and cycling modes with single estimates", async () => {
+    session = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+    });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    // Switch to walking
+    await session.setMode("walk");
+    expect(session.getMode()).toBe("walk");
+    expect(loadCommute).toHaveBeenLastCalledWith(
+      101,
+      { profileId: "prof-1", mode: "walk", samplePair: null },
+      expect.any(Object)
+    );
+    expect(states[states.length - 1].data.mode).toBe("walk");
+    expect(states[states.length - 1].data.samples[0].kind).toBe("single");
+
+    // Switch to cycling
+    await session.setMode("cycle");
+    expect(session.getMode()).toBe("cycle");
+    expect(loadCommute).toHaveBeenLastCalledWith(
+      101,
+      { profileId: "prof-1", mode: "cycle", samplePair: null },
+      expect.any(Object)
+    );
+    expect(states[states.length - 1].data.mode).toBe("cycle");
+    expect(states[states.length - 1].data.samples[0].kind).toBe("single");
+  });
+
+  it("retains walking and cycling modes across different centres in the same session", async () => {
+    session = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+    });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    await session.setMode("walk");
+
+    // Open next centre retains walk
+    await session.open({ centreId: 202, profileId: "prof-1" });
+    expect(session.getMode()).toBe("walk");
+    expect(loadCommute).toHaveBeenLastCalledWith(
+      202,
+      { profileId: "prof-1", mode: "walk", samplePair: null },
+      expect.any(Object)
+    );
+
+    // Switch to cycle on 202
+    await session.setMode("cycle");
+    expect(session.getMode()).toBe("cycle");
+
+    // Open third centre retains cycle
+    await session.open({ centreId: 303, profileId: "prof-1" });
+    expect(session.getMode()).toBe("cycle");
+    expect(loadCommute).toHaveBeenLastCalledWith(
+      303,
+      { profileId: "prof-1", mode: "cycle", samplePair: null },
+      expect.any(Object)
+    );
+  });
+
+  it("suppresses stale responses when rapidly switching between driving, walking, and cycling", async () => {
+    let resolveWalk;
+    const walkPromise = new Promise((resolve) => {
+      resolveWalk = resolve;
+    });
+
+    loadCommute = vi.fn().mockImplementation((centreId, { mode }) => {
+      if (mode === "walk") return walkPromise;
+      return Promise.resolve(mockCommute(centreId, mode));
+    });
+
+    session = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+    });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    // Request walk (slow)
+    const pWalk = session.setMode("walk");
+
+    // Quickly switch to cycle (fast)
+    await session.setMode("cycle");
+    expect(states[states.length - 1].data.mode).toBe("cycle");
+
+    // Slow walk resolves late
+    resolveWalk(mockCommute(101, "walk"));
+    await pWalk;
+
+    // Latest state must still be cycle, NOT walk
+    expect(states[states.length - 1].data.mode).toBe("cycle");
+  });
+
+  it("retains mode per user session and resets to drive on account switch or signout", () => {
+    resetSessionMode();
+    expect(getSessionMode("user-a")).toBe("drive");
+
+    setSessionMode("user-a", "walk");
+    expect(getSessionMode("user-a")).toBe("walk");
+
+    // Different user resets to default drive
+    expect(getSessionMode("user-b")).toBe("drive");
+
+    setSessionMode("user-b", "cycle");
+    expect(getSessionMode("user-b")).toBe("cycle");
+
+    // Sign out (null user) resets to default drive
+    expect(getSessionMode(null)).toBe("drive");
   });
 
   it("preserves retained mode across session instances until reset", async () => {
