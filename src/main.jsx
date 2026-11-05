@@ -20,6 +20,7 @@ import {
 
 import { auth } from './firebase';
 import AdminDashboard from './admin/AdminDashboard';
+import CentreLocationMap from './commute/CentreLocationMap';
 import {
   getCentres,
   getCentreById,
@@ -2619,6 +2620,11 @@ function App() {
                   {selectedCentre.address || 'Address not provided'}{' '}
                   {selectedCentre.postal ? `(${selectedCentre.postal})` : ''}
                 </p>
+                <CentreLocationMap
+                  centre={selectedCentre}
+                  currentUser={currentUser}
+                  onSignIn={() => setAuthMode('login')}
+                />
                 <p><b>Centre code:</b> {selectedCentre.centre_code || 'Not provided'}</p>
                 <p><b>Contact:</b> {selectedCentre.contact || 'Not provided'}</p>
                 <p><b>Email:</b> {selectedCentre.email || 'Not provided'}</p>

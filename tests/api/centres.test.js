@@ -128,4 +128,26 @@ describe("shared API request harness", () => {
 
     await expect(api.getCentres()).rejects.toThrow("503: temporarily unavailable");
   });
+
+  it("fetches centre location by encoded identifier forwarding request options", async () => {
+    const locationData = {
+      centre_id: 123,
+      coordinate: { lat: 1.3691, lng: 103.8512 },
+      status: "available",
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, locationData));
+
+    const controller = new AbortController();
+    await expect(
+      api.getCentreLocation("12/34", { signal: controller.signal })
+    ).resolves.toEqual(locationData);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.invalid/api/v1/centres/12%2F34/location",
+      expect.objectContaining({
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      })
+    );
+  });
 });
