@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createCommuteSession } from "../../src/commute/commuteSession.js";
+import {
+  createCommuteSession,
+  resetRetainedSessionMode,
+} from "../../src/commute/commuteSession.js";
 
 describe("createCommuteSession controller", () => {
   let loadCommute;
@@ -38,6 +41,7 @@ describe("createCommuteSession controller", () => {
   });
 
   beforeEach(() => {
+    resetRetainedSessionMode();
     states = [];
     loadCommute = vi.fn().mockImplementation(async (centreId, { mode }) => {
       return mockCommute(centreId, mode);
@@ -193,5 +197,23 @@ describe("createCommuteSession controller", () => {
     expect(latest.error).toBe(null);
     expect(latest.centreId).toBe(null);
     expect(latest.profileId).toBe(null);
+  });
+
+  it("preserves retained mode across session instances until reset", async () => {
+    const session1 = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+    });
+    await session1.open({ centreId: 101, profileId: "prof-1" });
+    await session1.setMode("pt");
+
+    const session2 = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+    });
+    expect(session2.getMode()).toBe("pt");
+
+    session2.reset();
+    expect(session2.getMode()).toBe("drive");
   });
 });

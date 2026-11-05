@@ -383,6 +383,23 @@
   margin: 0;
 }
 
+.commute-sample-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #1e3a8a;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.commute-sample-badge {
+  font-weight: 600;
+}
+
 .commute-breakdown {
   margin-top: 12px;
   display: flex;
@@ -392,14 +409,41 @@
 
 .commute-leg-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  gap: 6px;
   background: #fafbfa;
   border: 1px solid #e5ebe3;
   border-radius: 8px;
   padding: 8px 12px;
   font-size: 13px;
+}
+
+.commute-leg-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.commute-transit-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 22px;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.commute-transit-subleg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.commute-subleg-type {
+  font-weight: 600;
+  color: #374151;
 }
 
 .commute-leg-header {

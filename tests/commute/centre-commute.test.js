@@ -293,4 +293,222 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("Home postal code could not be resolved");
     expect(html).toContain("Edit family profile");
   });
+
+  it("renders Public transport mode control button", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(CentreCommuteView, {
+        currentUser: { uid: "u1" },
+        profileId: "prof-1",
+        centre: { id: 101, name: "Star Preschool" },
+        loading: false,
+        data: null,
+        mode: "pt",
+      })
+    );
+
+    expect(html).toContain("Public transport");
+  });
+
+  it("renders representative weekday label with sample date and 08:00 SGT assumption for PT mode", () => {
+    const data = {
+      centre_id: 101,
+      profile_id: "prof-1",
+      mode: "pt",
+      anchors: {
+        home: { lat: 1.3, lng: 103.8 },
+        centre: { lat: 1.35, lng: 103.85 },
+      },
+      samples: [
+        {
+          kind: "weekday",
+          sampled_at: "2026-11-11T08:00:00+08:00",
+          legs: [
+            {
+              from_anchor: "home",
+              to_anchor: "centre",
+              status: "available",
+              source: "onemap",
+              duration_seconds: 1500,
+              distance_meters: 5000,
+              geometry: [{ lat: 1.3, lng: 103.8 }],
+              transit_legs: [
+                {
+                  mode: "WALK",
+                  duration_seconds: 300,
+                  distance_meters: 250,
+                  instruction: "Walk (250 m)",
+                },
+                {
+                  mode: "BUS",
+                  route: "159",
+                  duration_seconds: 900,
+                  distance_meters: 4500,
+                  instruction: "Take Bus 159",
+                },
+                {
+                  mode: "WALK",
+                  duration_seconds: 300,
+                  distance_meters: 250,
+                  instruction: "Walk (250 m)",
+                },
+              ],
+            },
+          ],
+          totals: { duration_seconds: 1500, distance_meters: 5000 },
+        },
+      ],
+    };
+
+    const html = renderToStaticMarkup(
+      React.createElement(CentreCommuteView, {
+        currentUser: { uid: "u1" },
+        profileId: "prof-1",
+        centre: { id: 101, name: "Star Preschool" },
+        loading: false,
+        mode: "pt",
+        data,
+      })
+    );
+
+    expect(html).toContain("Representative Wednesday 08:00 SGT");
+    expect(html).toContain("11 Nov 2026");
+    expect(html).toContain("25 mins");
+    expect(html).toContain("5.0 km");
+    expect(html).toContain("Total travel: 25 mins (5.0 km)");
+  });
+
+  it("displays walking and transit legs in the route breakdown", () => {
+    const data = {
+      centre_id: 101,
+      profile_id: "prof-1",
+      mode: "pt",
+      anchors: {
+        home: { lat: 1.3, lng: 103.8 },
+        centre: { lat: 1.35, lng: 103.85 },
+      },
+      samples: [
+        {
+          kind: "weekday",
+          sampled_at: "2026-11-11T08:00:00+08:00",
+          legs: [
+            {
+              from_anchor: "home",
+              to_anchor: "centre",
+              status: "available",
+              source: "onemap",
+              duration_seconds: 1500,
+              distance_meters: 5000,
+              geometry: [{ lat: 1.3, lng: 103.8 }],
+              transit_legs: [
+                {
+                  mode: "WALK",
+                  duration_seconds: 300,
+                  distance_meters: 250,
+                },
+                {
+                  mode: "BUS",
+                  route: "159",
+                  duration_seconds: 900,
+                  distance_meters: 4500,
+                },
+                {
+                  mode: "WALK",
+                  duration_seconds: 300,
+                  distance_meters: 250,
+                },
+              ],
+            },
+          ],
+          totals: { duration_seconds: 1500, distance_meters: 5000 },
+        },
+      ],
+    };
+
+    const html = renderToStaticMarkup(
+      React.createElement(CentreCommuteView, {
+        currentUser: { uid: "u1" },
+        profileId: "prof-1",
+        centre: { id: 101, name: "Star Preschool" },
+        loading: false,
+        mode: "pt",
+        data,
+      })
+    );
+
+    expect(html).toContain("Walk: ");
+    expect(html).toContain("Transit (159): ");
+    expect(html).toContain("5 mins (0.3 km)");
+    expect(html).toContain("15 mins (4.5 km)");
+  });
+
+  it("withholds complete totals on partial failure in PT mode", () => {
+    const data = {
+      centre_id: 101,
+      profile_id: "prof-1",
+      mode: "pt",
+      anchors: {
+        home: { lat: 1.3, lng: 103.8 },
+        centre: { lat: 1.35, lng: 103.85 },
+        workplace: { lat: 1.28, lng: 103.85 },
+      },
+      samples: [
+        {
+          kind: "weekday",
+          sampled_at: "2026-11-11T08:00:00+08:00",
+          legs: [
+            {
+              from_anchor: "home",
+              to_anchor: "centre",
+              status: "available",
+              source: "onemap",
+              duration_seconds: 1500,
+              distance_meters: 5000,
+              geometry: [{ lat: 1.3, lng: 103.8 }],
+              transit_legs: [
+                {
+                  mode: "WALK",
+                  duration_seconds: 300,
+                  distance_meters: 250,
+                },
+                {
+                  mode: "BUS",
+                  route: "159",
+                  duration_seconds: 1200,
+                  distance_meters: 4750,
+                },
+              ],
+            },
+            {
+              from_anchor: "centre",
+              to_anchor: "workplace",
+              status: "unavailable",
+              source: null,
+              duration_seconds: null,
+              distance_meters: null,
+              geometry: null,
+              message: "Route unavailable",
+            },
+          ],
+          totals: null,
+        },
+      ],
+    };
+
+    const html = renderToStaticMarkup(
+      React.createElement(CentreCommuteView, {
+        currentUser: { uid: "u1" },
+        profileId: "prof-1",
+        centre: { id: 101, name: "Star Preschool" },
+        loading: false,
+        mode: "pt",
+        data,
+      })
+    );
+
+    expect(html).toContain("Walk: ");
+    expect(html).toContain("Transit (159): ");
+    expect(html).toContain("Route unavailable for Centre → Workplace");
+    expect(html).toContain("Complete journey totals unavailable");
+    expect(html).not.toContain("Total travel: ");
+  });
 });

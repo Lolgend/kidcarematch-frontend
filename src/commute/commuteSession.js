@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { getCentreCommute as defaultGetCentreCommute } from "../api";
 
+let retainedSessionMode = "drive";
+
+export function getRetainedSessionMode() {
+  return retainedSessionMode;
+}
+
+export function resetRetainedSessionMode() {
+  retainedSessionMode = "drive";
+}
+
 /**
  * Commute session controller.
  * Manages mode selection, sample tracking, loading state, retry, and stale request cancellation.
@@ -8,7 +18,7 @@ import { getCentreCommute as defaultGetCentreCommute } from "../api";
 export function createCommuteSession({
   loadCommute = defaultGetCentreCommute,
   onState = () => {},
-  initialMode = "drive",
+  initialMode = retainedSessionMode,
 }) {
   let mode = initialMode;
   let selectedSampleKind = "single";
@@ -133,6 +143,7 @@ export function createCommuteSession({
     async setMode(newMode) {
       if (mode === newMode) return;
       mode = newMode;
+      retainedSessionMode = newMode;
       if (centreId && profileId) {
         await executeRequest();
       } else {
@@ -155,6 +166,8 @@ export function createCommuteSession({
         activeController.abort();
         activeController = null;
       }
+      mode = "drive";
+      retainedSessionMode = "drive";
       centreId = null;
       profileId = null;
       samplePair = null;
@@ -178,7 +191,7 @@ export function useCommuteSession({
   centreId,
   profileId,
   loadCommute = defaultGetCentreCommute,
-  initialMode = "drive",
+  initialMode = retainedSessionMode,
 }) {
   const [state, setState] = useState({
     mode: initialMode,
