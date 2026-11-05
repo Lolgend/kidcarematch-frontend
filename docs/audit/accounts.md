@@ -5,7 +5,7 @@
 This slice checks the exported User profile requests and statically traces the frontend authentication lifecycle. It does not execute Firebase, launch the app, use a backend, or verify the identity provider or server's authorization behavior.
 
 - Frontend source reviewed: `58e1ec0de67030be7924587c4e76c016fc17519c` (ticket-10 after merging `integration/frontend-baseline-8`; source files in this slice are unchanged from the approved application baseline).
-- Backend contract snapshot: `db7fef7cc0e8691c83fc49623212ef35093c11d7`, as recorded by `docs/testing/frontend-baseline.md`. The backend checkout was not available in this worktree, so no new backend source inspection is claimed here.
+- Backend contract snapshot: `db7fef7cc0e8691c83fc49623212ef35093c11d7`. The ticket-16 final reconciliation confirmed this is still the sibling backend checkout's HEAD and re-opened the auth/security, user, role, route and ADR evidence cited by this slice. This verifies the pinned source snapshot only; no backend service or deployment was exercised.
 - Test environment: Node `v24.14.0`, npm `11.9.0`, Vitest `3.2.4`, Windows. Automated evidence is from the test-only wrapper seam; the test Firebase module and fetch are synthetic.
 - Evidence links: [account wrapper tests](../../tests/api/accounts.test.js), [directory/shared-helper tests](../../tests/api/centres.test.js), [shared API wrapper](../../src/api.js), [auth lifecycle](../../src/main.jsx), [Firebase initializer](../../src/firebase.js), [administrator request helper](../../src/admin/adminApi.js).
 

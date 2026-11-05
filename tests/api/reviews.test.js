@@ -11,6 +11,7 @@ describe("Review and report API operations", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.stubEnv("VITE_API_URL", "https://api.invalid/");
+    vi.stubEnv("VITE_API_BASE_URL", "https://admin.invalid/");
     auth.currentUser = null;
     fetchMock = failClosedFetch(vi);
     vi.stubGlobal("fetch", fetchMock);
