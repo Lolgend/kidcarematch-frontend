@@ -3,30 +3,51 @@ import { getCentreCommute as defaultGetCentreCommute } from "../api";
 
 let activeSessionUserId = null;
 let activeSessionMode = "drive";
+let activeSessionSamplePair = null;
 
 export function getSessionMode(userId = null) {
   if (!userId) {
     activeSessionUserId = null;
     activeSessionMode = "drive";
+    activeSessionSamplePair = null;
     return "drive";
   }
   if (activeSessionUserId !== userId) {
     activeSessionUserId = userId;
     activeSessionMode = "drive";
+    activeSessionSamplePair = null;
   }
   return activeSessionMode;
 }
 
 export function setSessionMode(userId, mode) {
   if (userId) {
-    activeSessionUserId = userId;
+    if (activeSessionUserId !== userId) {
+      activeSessionUserId = userId;
+      activeSessionSamplePair = null;
+    }
   }
   activeSessionMode = mode || "drive";
+}
+
+export function getSessionSamplePair(userId = null) {
+  if (!userId || activeSessionUserId !== userId) {
+    return null;
+  }
+  return activeSessionSamplePair;
+}
+
+export function setSessionSamplePair(userId, pair) {
+  if (userId) {
+    activeSessionUserId = userId;
+  }
+  activeSessionSamplePair = pair || null;
 }
 
 export function resetSessionMode() {
   activeSessionUserId = null;
   activeSessionMode = "drive";
+  activeSessionSamplePair = null;
 }
 
 export const resetCommuteSessionMode = resetSessionMode;
@@ -41,13 +62,14 @@ export function createCommuteSession({
   loadCommute = defaultGetCentreCommute,
   onState = () => {},
   initialMode = activeSessionMode,
+  initialSamplePair = null,
   userId = null,
 }) {
   let mode = initialMode;
-  let selectedSampleKind = "single";
+  let selectedSample = "weekday";
   let centreId = null;
   let profileId = null;
-  let samplePair = null;
+  let samplePair = initialSamplePair || getSessionSamplePair(userId);
   let loading = false;
   let error = null;
   let data = null;
@@ -58,7 +80,8 @@ export function createCommuteSession({
   function emit() {
     onState({
       mode,
-      selectedSampleKind,
+      selectedSample,
+      selectedSampleKind: selectedSample,
       centreId,
       profileId,
       samplePair,
@@ -107,13 +130,20 @@ export function createCommuteSession({
         error = null;
         if (response?.sample_pair) {
           samplePair = response.sample_pair;
+          if (userId) {
+            setSessionSamplePair(userId, response.sample_pair);
+          }
         }
         if (Array.isArray(response?.samples) && response.samples.length > 0) {
-          const matchingSample = response.samples.find(
-            (s) => s.kind === selectedSampleKind
-          );
-          if (!matchingSample) {
-            selectedSampleKind = response.samples[0].kind;
+          if (response.samples.length > 1) {
+            const matchingSample = response.samples.find(
+              (s) => s.kind === selectedSample
+            );
+            if (!matchingSample) {
+              selectedSample = "weekday";
+            }
+          } else {
+            selectedSample = response.samples[0].kind || "single";
           }
         }
         emit();
@@ -125,8 +155,12 @@ export function createCommuteSession({
           String(err?.message || "").includes("sample_expired");
 
         if (isExpired && samplePair && !isRetry) {
-          // Fresh pair retry once
+          // Invalidate old sample pair, clear cached comparisons, obtain fresh sample pair
           samplePair = null;
+          if (userId) {
+            setSessionSamplePair(userId, null);
+          }
+          data = null;
           await executeRequest(true);
           return;
         }
@@ -144,10 +178,19 @@ export function createCommuteSession({
       return mode;
     },
 
+    getSelectedSample() {
+      return selectedSample;
+    },
+
+    getSamplePair() {
+      return samplePair;
+    },
+
     getState() {
       return {
         mode,
-        selectedSampleKind,
+        selectedSample,
+        selectedSampleKind: selectedSample,
         centreId,
         profileId,
         samplePair,
@@ -175,7 +218,7 @@ export function createCommuteSession({
     },
 
     selectSample(kind) {
-      selectedSampleKind = kind;
+      selectedSample = kind;
       emit();
     },
 
@@ -190,10 +233,11 @@ export function createCommuteSession({
         activeController = null;
       }
       mode = "drive";
+      selectedSample = "weekday";
+      samplePair = null;
       resetSessionMode();
       centreId = null;
       profileId = null;
-      samplePair = null;
       loading = false;
       error = null;
       data = null;
@@ -216,14 +260,17 @@ export function useCommuteSession({
   userId = null,
   loadCommute = defaultGetCentreCommute,
   initialMode,
+  initialSamplePair,
 }) {
   const currentMode = initialMode || getSessionMode(userId);
+  const currentSamplePair = initialSamplePair || getSessionSamplePair(userId);
   const [state, setState] = useState({
     mode: currentMode,
-    selectedSampleKind: "single",
+    selectedSample: "weekday",
+    selectedSampleKind: "weekday",
     centreId,
     profileId,
-    samplePair: null,
+    samplePair: currentSamplePair,
     loading: Boolean(centreId && profileId),
     error: null,
     data: null,
@@ -238,9 +285,13 @@ export function useCommuteSession({
         if (nextState.mode) {
           setSessionMode(userId, nextState.mode);
         }
+        if (nextState.samplePair) {
+          setSessionSamplePair(userId, nextState.samplePair);
+        }
         setState(nextState);
       },
       initialMode: currentMode,
+      initialSamplePair: currentSamplePair,
       userId,
     });
   }
