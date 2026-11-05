@@ -101,10 +101,12 @@ describe("shared account request operations", () => {
   it("uses a JSON message when detail is absent and the generic text for non-string details", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(vi, { message: "synthetic message" }, 500))
-      .mockResolvedValueOnce(jsonResponse(vi, { detail: { reason: "synthetic" } }, 500));
+      .mockResolvedValueOnce(jsonResponse(vi, { detail: { reason: "synthetic" } }, 500))
+      .mockResolvedValueOnce(jsonResponse(vi, { detail: "", message: "fallback message" }, 500));
 
     await expect(api.getMyProfile()).rejects.toThrow("500: synthetic message");
     await expect(api.getMyProfile()).rejects.toThrow("500: API request failed");
+    await expect(api.getMyProfile()).rejects.toThrow("500: fallback message");
   });
 
   it("exposes the current null-body HTTP error edge case", async () => {
@@ -233,10 +235,12 @@ describe("administrator request helper", () => {
     auth.currentUser = { getIdToken: vi.fn().mockResolvedValue("synthetic-token") };
     fetchMock
       .mockResolvedValueOnce(jsonResponse(vi, { detail: { reason: "synthetic" } }, 422))
-      .mockResolvedValueOnce(jsonResponse(vi, { message: "synthetic body" }, 500));
+      .mockResolvedValueOnce(jsonResponse(vi, { message: "synthetic body" }, 500))
+      .mockResolvedValueOnce(jsonResponse(vi, { detail: "" }, 500));
 
     await expect(adminApi("/users")).rejects.toThrow('{"reason":"synthetic"}');
     await expect(adminApi("/users")).rejects.toThrow('{"message":"synthetic body"}');
+    await expect(adminApi("/users")).rejects.toThrow("Request failed (500).");
   });
 
   it("returns JSON success data and null for text and 204 responses", async () => {
