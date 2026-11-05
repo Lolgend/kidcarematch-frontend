@@ -3,6 +3,8 @@ import {
   createCommuteSession,
   getSessionMode,
   setSessionMode,
+  getSessionSamplePair,
+  setSessionSamplePair,
   resetSessionMode,
   resetRetainedSessionMode,
 } from "../../src/commute/commuteSession.js";
@@ -333,5 +335,133 @@ describe("createCommuteSession controller", () => {
 
     session2.reset();
     expect(session2.getMode()).toBe("drive");
+  });
+
+  it("retains samplePair returned by the server and passes it in subsequent commute requests across centres", async () => {
+    const samplePair = ["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"];
+    loadCommute = vi.fn().mockImplementation(async (centreId, { mode, samplePair: sp }) => {
+      return {
+        ...mockCommute(centreId, mode),
+        sample_pair: sp || samplePair,
+      };
+    });
+
+    session = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+      userId: "user-1",
+    });
+
+    // First request: no samplePair initially
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(loadCommute).toHaveBeenNthCalledWith(
+      1,
+      101,
+      { profileId: "prof-1", mode: "drive", samplePair: null },
+      expect.any(Object)
+    );
+    expect(states[states.length - 1].samplePair).toEqual(samplePair);
+
+    // Second request on different centre: passes retained samplePair!
+    await session.open({ centreId: 202, profileId: "prof-1" });
+    expect(loadCommute).toHaveBeenNthCalledWith(
+      2,
+      202,
+      { profileId: "prof-1", mode: "drive", samplePair },
+      expect.any(Object)
+    );
+    expect(states[states.length - 1].samplePair).toEqual(samplePair);
+  });
+
+  it("tracks selectedSample defaulting to weekday for multi-sample responses and allows switching", async () => {
+    const multiSampleData = {
+      centre_id: 101,
+      profile_id: "prof-1",
+      mode: "pt",
+      sample_pair: ["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"],
+      samples: [
+        { kind: "weekday", legs: [], totals: { duration_seconds: 1500, distance_meters: 5000 } },
+        { kind: "weekend", legs: [], totals: { duration_seconds: 1800, distance_meters: 5000 } },
+      ],
+    };
+
+    loadCommute = vi.fn().mockResolvedValue(multiSampleData);
+
+    session = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+    });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(states[states.length - 1].selectedSample).toBe("weekday");
+
+    // Switch to weekend
+    session.selectSample("weekend");
+    expect(states[states.length - 1].selectedSample).toBe("weekend");
+
+    // Switch back to weekday
+    session.selectSample("weekday");
+    expect(states[states.length - 1].selectedSample).toBe("weekday");
+  });
+
+  it("handles 409 sample_expired error by invalidating samplePair and retrying with fresh pair once", async () => {
+    const oldPair = ["2026-11-04T08:00:00+08:00", "2026-11-07T08:00:00+08:00"];
+    const freshPair = ["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"];
+
+    loadCommute = vi.fn().mockImplementation(async (centreId, { samplePair: sp }) => {
+      if (sp === oldPair) {
+        throw new Error("409: sample_expired");
+      }
+      return {
+        ...mockCommute(centreId),
+        sample_pair: freshPair,
+      };
+    });
+
+    session = createCommuteSession({
+      loadCommute,
+      onState: (s) => states.push(s),
+      initialSamplePair: oldPair,
+      userId: "user-1",
+    });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    // Should have called twice: first with oldPair (which failed with 409), second with null (retry)
+    expect(loadCommute).toHaveBeenCalledTimes(2);
+    expect(loadCommute).toHaveBeenNthCalledWith(
+      1,
+      101,
+      { profileId: "prof-1", mode: "drive", samplePair: oldPair },
+      expect.any(Object)
+    );
+    expect(loadCommute).toHaveBeenNthCalledWith(
+      2,
+      101,
+      { profileId: "prof-1", mode: "drive", samplePair: null },
+      expect.any(Object)
+    );
+
+    const latest = states[states.length - 1];
+    expect(latest.error).toBe(null);
+    expect(latest.samplePair).toEqual(freshPair);
+  });
+
+  it("resets retained samplePair and mode on signout or account switch", () => {
+    resetSessionMode();
+    setSessionMode("user-1", "pt");
+    setSessionSamplePair("user-1", ["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"]);
+
+    expect(getSessionMode("user-1")).toBe("pt");
+    expect(getSessionSamplePair("user-1")).toEqual(["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"]);
+
+    // Different user: mode resets to drive and sample pair resets to null
+    expect(getSessionMode("user-2")).toBe("drive");
+    expect(getSessionSamplePair("user-2")).toBe(null);
+
+    // Sign out (null user)
+    resetSessionMode();
+    expect(getSessionMode(null)).toBe("drive");
+    expect(getSessionSamplePair(null)).toBe(null);
   });
 });

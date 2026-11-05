@@ -756,4 +756,314 @@ describe("CentreCommute presentation", () => {
     expect(html).not.toContain("Total travel: ");
     expect(html).toContain("Retry route");
   });
+
+  it("renders Weekday and Weekend summary tabs with sample dates, times, and disclaimer for PT mode", () => {
+    const data = {
+      centre_id: 101,
+      profile_id: "prof-1",
+      mode: "pt",
+      sample_pair: ["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"],
+      anchors: {
+        home: { lat: 1.3, lng: 103.8 },
+        centre: { lat: 1.35, lng: 103.85 },
+      },
+      samples: [
+        {
+          kind: "weekday",
+          sampled_at: "2026-11-11T08:00:00+08:00",
+          legs: [
+            {
+              from_anchor: "home",
+              to_anchor: "centre",
+              status: "available",
+              source: "onemap",
+              duration_seconds: 1500,
+              distance_meters: 5000,
+              geometry: [
+                { lat: 1.3, lng: 103.8 },
+                { lat: 1.31, lng: 103.81 },
+              ],
+            },
+          ],
+          totals: { duration_seconds: 1500, distance_meters: 5000 },
+        },
+        {
+          kind: "weekend",
+          sampled_at: "2026-11-14T08:00:00+08:00",
+          legs: [
+            {
+              from_anchor: "home",
+              to_anchor: "centre",
+              status: "available",
+              source: "onemap",
+              duration_seconds: 1800,
+              distance_meters: 5000,
+              geometry: [
+                { lat: 1.3, lng: 103.8 },
+                { lat: 1.32, lng: 103.82 },
+              ],
+            },
+          ],
+          totals: { duration_seconds: 1800, distance_meters: 5000 },
+        },
+      ],
+    };
+
+    const html = renderToStaticMarkup(
+      React.createElement(CentreCommuteView, {
+        currentUser: { uid: "u1" },
+        profileId: "prof-1",
+        centre: { id: 101, name: "Star Preschool" },
+        loading: false,
+        mode: "pt",
+        selectedSample: "weekday",
+        data,
+      })
+    );
+
+    // Tabs
+    expect(html).toContain('role="tablist"');
+    expect(html).toContain(
+      'role="tab" id="tab-weekday" aria-selected="true" class="commute-sample-tab active"'
+    );
+    expect(html).toContain(
+      'role="tab" id="tab-weekend" aria-selected="false" class="commute-sample-tab "'
+    );
+    expect(html).toContain("Weekday");
+    expect(html).toContain("Weekend");
+    expect(html).toContain("11 Nov 08:00");
+    expect(html).toContain("14 Nov 08:00");
+    expect(html).toContain("25 mins");
+    expect(html).toContain("30 mins");
+
+    // Disclaimer
+    expect(html).toContain(
+      "Representative conditions at 08:00 SGT (not all-day averages or traffic guarantees)"
+    );
+
+    // Weekday metrics & geometry
+    expect(html).toContain("Total travel: 25 mins (5.0 km)");
+    expect(html).toContain(
+      JSON.stringify([
+        [1.3, 103.8],
+        [1.31, 103.81],
+      ])
+    );
+  });
+
+  it("switches displayed route geometry, per-leg metrics, and totals when weekend sample is selected", () => {
+    const data = {
+      centre_id: 101,
+      profile_id: "prof-1",
+      mode: "pt",
+      sample_pair: ["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"],
+      anchors: {
+        home: { lat: 1.3, lng: 103.8 },
+        centre: { lat: 1.35, lng: 103.85 },
+      },
+      samples: [
+        {
+          kind: "weekday",
+          sampled_at: "2026-11-11T08:00:00+08:00",
+          legs: [
+            {
+              from_anchor: "home",
+              to_anchor: "centre",
+              status: "available",
+              source: "onemap",
+              duration_seconds: 1500,
+              distance_meters: 5000,
+              geometry: [
+                { lat: 1.3, lng: 103.8 },
+                { lat: 1.31, lng: 103.81 },
+              ],
+            },
+          ],
+          totals: { duration_seconds: 1500, distance_meters: 5000 },
+        },
+        {
+          kind: "weekend",
+          sampled_at: "2026-11-14T08:00:00+08:00",
+          legs: [
+            {
+              from_anchor: "home",
+              to_anchor: "centre",
+              status: "available",
+              source: "onemap",
+              duration_seconds: 1800,
+              distance_meters: 5200,
+              geometry: [
+                { lat: 1.3, lng: 103.8 },
+                { lat: 1.39, lng: 103.89 },
+              ],
+            },
+          ],
+          totals: { duration_seconds: 1800, distance_meters: 5200 },
+        },
+      ],
+    };
+
+    const htmlWeekend = renderToStaticMarkup(
+      React.createElement(CentreCommuteView, {
+        currentUser: { uid: "u1" },
+        profileId: "prof-1",
+        centre: { id: 101, name: "Star Preschool" },
+        loading: false,
+        mode: "pt",
+        selectedSample: "weekend",
+        data,
+      })
+    );
+
+    // Weekend tab is selected
+    expect(htmlWeekend).toContain(
+      'role="tab" id="tab-weekend" aria-selected="true" class="commute-sample-tab active"'
+    );
+    expect(htmlWeekend).toContain(
+      'role="tab" id="tab-weekday" aria-selected="false" class="commute-sample-tab "'
+    );
+
+    // Weekend numbers: 30 mins (5.2 km)
+    expect(htmlWeekend).toContain("Total travel: 30 mins (5.2 km)");
+
+    // Weekend geometry on map
+    expect(htmlWeekend).toContain(
+      JSON.stringify([
+        [1.3, 103.8],
+        [1.39, 103.89],
+      ])
+    );
+    expect(htmlWeekend).not.toContain(
+      JSON.stringify([
+        [1.3, 103.8],
+        [1.31, 103.81],
+      ])
+    );
+  });
+
+  it("handles independent weekend leg failure while weekday succeeds", () => {
+    const data = {
+      centre_id: 101,
+      profile_id: "prof-1",
+      mode: "pt",
+      sample_pair: ["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"],
+      anchors: {
+        home: { lat: 1.3, lng: 103.8 },
+        centre: { lat: 1.35, lng: 103.85 },
+      },
+      samples: [
+        {
+          kind: "weekday",
+          sampled_at: "2026-11-11T08:00:00+08:00",
+          legs: [
+            {
+              from_anchor: "home",
+              to_anchor: "centre",
+              status: "available",
+              source: "onemap",
+              duration_seconds: 1500,
+              distance_meters: 5000,
+              geometry: [{ lat: 1.3, lng: 103.8 }],
+            },
+          ],
+          totals: { duration_seconds: 1500, distance_meters: 5000 },
+        },
+        {
+          kind: "weekend",
+          sampled_at: "2026-11-14T08:00:00+08:00",
+          legs: [
+            {
+              from_anchor: "home",
+              to_anchor: "centre",
+              status: "unavailable",
+              source: null,
+              duration_seconds: null,
+              distance_meters: null,
+              geometry: null,
+              message: "No public transport itinerary found",
+            },
+          ],
+          totals: null,
+        },
+      ],
+    };
+
+    // Weekday view shows complete totals
+    const htmlWeekday = renderToStaticMarkup(
+      React.createElement(CentreCommuteView, {
+        currentUser: { uid: "u1" },
+        profileId: "prof-1",
+        centre: { id: 101, name: "Star Preschool" },
+        loading: false,
+        mode: "pt",
+        selectedSample: "weekday",
+        data,
+      })
+    );
+    expect(htmlWeekday).toContain("Total travel: 25 mins (5.0 km)");
+
+    // Weekend view withholds totals and offers retry
+    const htmlWeekend = renderToStaticMarkup(
+      React.createElement(CentreCommuteView, {
+        currentUser: { uid: "u1" },
+        profileId: "prof-1",
+        centre: { id: 101, name: "Star Preschool" },
+        loading: false,
+        mode: "pt",
+        selectedSample: "weekend",
+        data,
+      })
+    );
+    expect(htmlWeekend).not.toContain("Total travel: 25 mins");
+    expect(htmlWeekend).toContain("Route unavailable for Home → Centre");
+    expect(htmlWeekend).toContain("Complete journey totals unavailable");
+    expect(htmlWeekend).toContain("Retry route");
+  });
+
+  it("does not render weekday/weekend tabs for modes with single estimate (drive, walk, cycle)", () => {
+    for (const mode of ["drive", "walk", "cycle"]) {
+      const data = {
+        centre_id: 101,
+        profile_id: "prof-1",
+        mode,
+        anchors: {
+          home: { lat: 1.3, lng: 103.8 },
+          centre: { lat: 1.35, lng: 103.85 },
+        },
+        samples: [
+          {
+            kind: "single",
+            legs: [
+              {
+                from_anchor: "home",
+                to_anchor: "centre",
+                status: "available",
+                source: "onemap",
+                duration_seconds: 600,
+                distance_meters: 5000,
+                geometry: [{ lat: 1.3, lng: 103.8 }],
+              },
+            ],
+            totals: { duration_seconds: 600, distance_meters: 5000 },
+          },
+        ],
+      };
+
+      const html = renderToStaticMarkup(
+        React.createElement(CentreCommuteView, {
+          currentUser: { uid: "u1" },
+          profileId: "prof-1",
+          centre: { id: 101, name: "Star Preschool" },
+          loading: false,
+          mode,
+          data,
+        })
+      );
+
+      // Must NOT contain tab controls or artificial weekday/weekend controls
+      expect(html).not.toContain('role="tablist"');
+      expect(html).not.toContain('id="tab-weekday"');
+      expect(html).not.toContain('id="tab-weekend"');
+    }
+  });
 });

@@ -47,7 +47,7 @@ export async function apiRequest(endpoint, options = {}) {
   if (!response.ok) {
     const detail =
       typeof body === "object"
-        ? body.detail || body.message
+        ? (body.detail?.code || body.detail?.message || body.detail || body.message)
         : body;
 
     throw new Error(

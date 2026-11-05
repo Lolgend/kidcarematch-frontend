@@ -40,6 +40,28 @@ export function formatSampleDate(isoString) {
   }
 }
 
+export function formatSampleDateTime(isoString) {
+  if (!isoString) return "";
+  try {
+    const d = new Date(isoString);
+    const datePart = d.toLocaleDateString("en-SG", {
+      timeZone: "Asia/Singapore",
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+    });
+    const timePart = d.toLocaleTimeString("en-SG", {
+      timeZone: "Asia/Singapore",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    return `${datePart} ${timePart}`;
+  } catch {
+    return "";
+  }
+}
+
 export function CentreCommuteView({
   currentUser,
   profileId,
@@ -49,7 +71,9 @@ export function CentreCommuteView({
   error,
   data,
   mode = "drive",
+  selectedSample = "weekday",
   onModeChange,
+  onSelectSample,
   onRetry,
   onSignIn,
   onEditProfile,
@@ -92,7 +116,19 @@ export function CentreCommuteView({
   }
 
   // 3. Parents with saved profile
-  const sample = data?.samples?.[0] || null;
+  const samples = Array.isArray(data?.samples) ? data.samples : [];
+  const weekdaySample = samples.find((s) => s.kind === "weekday") || null;
+  const weekendSample = samples.find((s) => s.kind === "weekend") || null;
+  const isDateDependent = Boolean(weekdaySample && weekendSample);
+
+  const currentSampleKind = isDateDependent
+    ? (selectedSample === "weekend" ? "weekend" : "weekday")
+    : (samples[0]?.kind || "single");
+
+  const sample = isDateDependent
+    ? (currentSampleKind === "weekend" ? weekendSample : weekdaySample)
+    : (samples[0] || null);
+
   const legs = sample?.legs || [];
 
   // Check for unresolvable postal code messages
@@ -194,13 +230,62 @@ export function CentreCommuteView({
             </div>
           )}
 
-          {sample?.kind === "weekday" && (
-            <div className="commute-sample-label" role="note" aria-label="Sample conditions">
-              <span className="commute-sample-badge">Representative Wednesday 08:00 SGT</span>
-              {sample.sampled_at && (
-                <span className="commute-sample-date"> ({formatSampleDate(sample.sampled_at)})</span>
-              )}
+          {/* Representative Weekday / Weekend summary selector tabs */}
+          {isDateDependent ? (
+            <div className="commute-sample-controls" aria-label="Representative travel conditions">
+              <div className="commute-sample-selector" role="tablist" aria-label="Representative travel day">
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-weekday"
+                  aria-selected={currentSampleKind === "weekday"}
+                  className={`commute-sample-tab ${currentSampleKind === "weekday" ? "active" : ""}`}
+                  onClick={() => onSelectSample && onSelectSample("weekday")}
+                >
+                  <span className="sample-tab-title">Weekday</span>
+                  {weekdaySample?.sampled_at && (
+                    <span className="sample-tab-date">{formatSampleDateTime(weekdaySample.sampled_at)}</span>
+                  )}
+                  {weekdaySample?.totals ? (
+                    <span className="sample-tab-duration">
+                      {formatDuration(weekdaySample.totals.duration_seconds)}
+                    </span>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-weekend"
+                  aria-selected={currentSampleKind === "weekend"}
+                  className={`commute-sample-tab ${currentSampleKind === "weekend" ? "active" : ""}`}
+                  onClick={() => onSelectSample && onSelectSample("weekend")}
+                >
+                  <span className="sample-tab-title">Weekend</span>
+                  {weekendSample?.sampled_at && (
+                    <span className="sample-tab-date">{formatSampleDateTime(weekendSample.sampled_at)}</span>
+                  )}
+                  {weekendSample?.totals ? (
+                    <span className="sample-tab-duration">
+                      {formatDuration(weekendSample.totals.duration_seconds)}
+                    </span>
+                  ) : null}
+                </button>
+              </div>
+              <div className="commute-sample-disclaimer" role="note">
+                <small>
+                  Representative conditions at 08:00 SGT (not all-day averages or traffic guarantees).
+                </small>
+              </div>
             </div>
+          ) : (
+            sample?.kind === "weekday" && (
+              <div className="commute-sample-label" role="note" aria-label="Sample conditions">
+                <span className="commute-sample-badge">Representative Wednesday 08:00 SGT</span>
+                {sample.sampled_at && (
+                  <span className="commute-sample-date"> ({formatSampleDate(sample.sampled_at)})</span>
+                )}
+              </div>
+            )
           )}
 
           {/* Map display */}
@@ -240,7 +325,7 @@ export function CentreCommuteView({
               )}
               {availableLegsWithGeometry.map((leg, idx) => (
                 <Polyline
-                  key={idx}
+                  key={`${currentSampleKind}-${idx}`}
                   positions={leg.geometry.map((c) => [c.lat, c.lng])}
                   pathOptions={
                     leg.from_anchor === "home"
@@ -364,7 +449,9 @@ export default function CentreCommute({
       error={session.error}
       data={session.data}
       mode={session.mode}
+      selectedSample={session.selectedSample || session.selectedSampleKind}
       onModeChange={session.setMode}
+      onSelectSample={session.selectSample}
       onRetry={session.retry}
       onSignIn={onSignIn}
       onEditProfile={onEditProfile}
