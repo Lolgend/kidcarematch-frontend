@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   getCentreCommute as defaultGetCentreCommute,
-  getCommuteCapabilities as defaultGetCapabilities,
+  getCommuteCapabilities as defaultGetCommuteCapabilities,
 } from "../api";
 
 const SELECTED_SAMPLING_CONTRACT = "weekday_0800_wed_thu_fri_v1";
@@ -89,13 +89,22 @@ export const resetCommuteSessionMode = resetSessionMode;
 export const resetRetainedSessionMode = resetSessionMode;
 export const getRetainedSessionMode = getSessionMode;
 
+function hasValidCapabilityDocument(document) {
+  if (!document || typeof document !== "object" || Array.isArray(document)) return false;
+  const hasDirectMarker = Object.prototype.hasOwnProperty.call(document, "direct_baseline_contract") &&
+    (document.direct_baseline_contract === null || typeof document.direct_baseline_contract === "string");
+  const hasSamplingMarkerShape = Object.prototype.hasOwnProperty.call(document, "sampling_contract") &&
+    (document.sampling_contract === null || typeof document.sampling_contract === "string");
+  return hasDirectMarker && hasSamplingMarkerShape;
+}
+
 /**
  * Commute session controller.
  * Manages mode selection, sample tracking, loading state, retry, and stale request cancellation.
  */
 export function createCommuteSession({
   loadCommute = defaultGetCentreCommute,
-  getCapabilities = defaultGetCapabilities,
+  getCapabilities = defaultGetCommuteCapabilities,
   selectedSamplingEnabled = SELECTED_SAMPLING_ENABLED,
   comparisonCentreIds = null,
   now = () => new Date(),
@@ -103,6 +112,7 @@ export function createCommuteSession({
   initialMode = activeSessionMode,
   initialSamplePair = null,
   userId = null,
+  directBaselineEnabled = import.meta.env.VITE_COMMUTE_DIRECT_BASELINE_ENABLED === "true",
 }) {
   let mode = initialMode;
   let selectedSample = "weekday";
@@ -115,6 +125,9 @@ export function createCommuteSession({
   let data = null;
   let setData = {};
   let sampling = null;
+  let directBaselineStatus = directBaselineEnabled ? "unknown" : "disabled";
+  let directBaselineError = null;
+  let capabilities = null;
 
   let activeRequestId = 0;
   let activeController = null;
@@ -164,6 +177,8 @@ export function createCommuteSession({
       data,
       setData,
       sampling,
+      directBaselineStatus,
+      directBaselineError,
     });
   }
 
@@ -177,6 +192,8 @@ export function createCommuteSession({
     if (!centreId || !profileId) {
       loading = false;
       data = null;
+      setData = {};
+      sampling = null;
       error = null;
       emit();
       return;
@@ -188,6 +205,7 @@ export function createCommuteSession({
 
     loading = true;
     error = null;
+    directBaselineError = null;
     emit();
 
     if (selectedSamplingEnabled && mode === "pt") {
@@ -196,12 +214,41 @@ export function createCommuteSession({
     }
 
     try {
+      let includeDirectBaseline = false;
+      if (directBaselineEnabled) {
+        if (!capabilities) {
+          directBaselineStatus = "checking";
+          emit();
+          try {
+            const discovered = await getCapabilities({ signal: controller.signal });
+            if (requestId !== activeRequestId) return;
+            const validDocument = hasValidCapabilityDocument(discovered);
+            capabilities = validDocument ? discovered : { direct_baseline_contract: null };
+            const marker = validDocument ? discovered.direct_baseline_contract : null;
+            includeDirectBaseline = marker === "direct_baseline_v1";
+            directBaselineStatus = includeDirectBaseline ? "supported" : "unsupported";
+          } catch (discoveryError) {
+            if (requestId !== activeRequestId || discoveryError?.name === "AbortError") return;
+            if (discoveryError?.status === 404 || String(discoveryError?.message || "").startsWith("404:")) {
+              capabilities = { direct_baseline_contract: null };
+              directBaselineStatus = "unsupported";
+            } else {
+              directBaselineStatus = "error";
+              directBaselineError = discoveryError;
+            }
+          }
+        } else {
+          includeDirectBaseline = !capabilities.invalid && capabilities.direct_baseline_contract === "direct_baseline_v1";
+          directBaselineStatus = includeDirectBaseline ? "supported" : "unsupported";
+        }
+      }
       const response = await loadCommute(
         centreId,
         {
           profileId,
           mode,
           samplePair,
+          ...(includeDirectBaseline ? { includeDirectBaseline: true } : {}),
         },
         { signal: controller.signal }
       );
@@ -217,6 +264,9 @@ export function createCommuteSession({
           if (userId) {
             setSessionSamplePair(userId, response.sample_pair);
           }
+        }
+        if (includeDirectBaseline && response?.comparison_contract !== "direct_baseline_v1") {
+          directBaselineStatus = "unsupported";
         }
         if (Array.isArray(response?.samples) && response.samples.length > 0) {
           if (response.samples.length > 1) {
@@ -346,9 +396,7 @@ export function createCommuteSession({
     }
 
     if (requestId !== activeRequestId) return;
-    const validCapabilities = capabilities &&
-      Object.hasOwn(capabilities, "direct_baseline_contract") &&
-      Object.hasOwn(capabilities, "sampling_contract");
+    const validCapabilities = hasValidCapabilityDocument(capabilities);
     if (!validCapabilities || capabilities.sampling_contract !== SELECTED_SAMPLING_CONTRACT) {
       // Unknown or malformed discovery is unsupported; retain legacy pair behavior.
       selectedSamplingEnabled = false;
@@ -527,6 +575,8 @@ export function createCommuteSession({
         data,
         setData,
         sampling,
+        directBaselineStatus,
+        directBaselineError,
       };
     },
 
@@ -539,6 +589,7 @@ export function createCommuteSession({
         clearExpiryTimer();
         data = null;
         setData = {};
+        sampling = null;
         error = null;
       }
       await executeRequest();
@@ -579,6 +630,9 @@ export function createCommuteSession({
       clearExpiryTimer();
       selectedSample = "weekday";
       samplePair = null;
+      capabilities = null;
+      directBaselineStatus = directBaselineEnabled ? "unknown" : "disabled";
+      directBaselineError = null;
       resetSessionMode();
       centreId = null;
       profileId = null;
@@ -586,6 +640,8 @@ export function createCommuteSession({
       loading = false;
       error = null;
       data = null;
+      setData = {};
+      sampling = null;
       emit();
     },
 
@@ -606,6 +662,8 @@ export function useCommuteSession({
   locationKey = null,
   userId = null,
   loadCommute = defaultGetCentreCommute,
+  getCapabilities = defaultGetCommuteCapabilities,
+  directBaselineEnabled = import.meta.env.VITE_COMMUTE_DIRECT_BASELINE_ENABLED === "true",
   initialMode,
   initialSamplePair,
 }) {
@@ -622,11 +680,15 @@ export function useCommuteSession({
     loading: Boolean(centreId && profileId),
     error: null,
     data: null,
+    directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled",
+    directBaselineError: null,
   });
 
   const sessionRef = useRef(null);
   const createSession = () => createCommuteSession({
       loadCommute,
+      getCapabilities,
+      directBaselineEnabled,
       onState: (nextState) => {
         if (nextState.mode) {
           setSessionMode(userId, nextState.mode);
@@ -650,6 +712,7 @@ export function useCommuteSession({
         mode: getSessionMode(userId), selectedSample: 'weekday', selectedSampleKind: 'weekday',
         centreId, profileId, locationKey, samplePair: getSessionSamplePair(userId),
         loading: Boolean(centreId && profileId), error: null, data: null,
+        directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled", directBaselineError: null,
       });
     }
     const session = sessionRef.current.session;
@@ -670,6 +733,7 @@ export function useCommuteSession({
       samplePair: sessionRef.current.userId === userId ? state.samplePair : currentSamplePair,
       centreId, profileId, locationKey,
       loading: Boolean(centreId && profileId), error: null, data: null,
+      directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled", directBaselineError: null,
     };
 
   return {

@@ -2,11 +2,11 @@
 
 ## Automated checks
 
-- Focused commute API and session-controller tests: 31 passed.
+- Focused commute API and session-controller tests: 40 passed after merging the independent direct-baseline slice.
 - The controller tests cover sampling-only discovery; exact selected-policy request serialization and invalid opt-ins; strict response marker, cycle, selected-index, conditions, profile revision, and request-context checks; unequal results across two centres; shared Wednesday-to-Thursday advancement; reuse of the issued cycle/index by a subsequent centre session; authentication without calendar cycling; Wednesday-boundary expiry during an in-flight evaluation with one whole-cycle refresh; active Thursday-result refresh at cycle expiry; exhaustion without automatic restart; bounded second-expiry recovery; and stale selected-response rejection after a mode change.
-- Focused V8 coverage run: 75.99% statements overall; `src/api.js` 69.89% statements / 65.78% branches; `src/commute/commuteSession.js` 78.67% statements / 85.26% branches.
-- Full unit suite: 207 passed across 14 files.
-- `npm run build`: passed. Vite emitted its existing large-chunk warning (1,016.83 kB minified).
+- Focused V8 coverage run: 75.97% statements overall; `src/api.js` 70.49% statements / 68.42% branches; `src/commute/commuteSession.js` 78.22% statements / 83.73% branches.
+- Full unit suite after merging the independent direct-baseline slice: 220 passed across 14 files.
+- `npm run build`: passed. Vite emitted its existing large-chunk warning (1,025.05 kB minified).
 
 ## Synthetic browser checks
 

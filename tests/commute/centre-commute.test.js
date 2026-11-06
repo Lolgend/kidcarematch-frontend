@@ -46,6 +46,7 @@ vi.mock("react-leaflet", () => ({
     }),
 }));
 vi.mock("leaflet/dist/leaflet.css", () => ({}));
+vi.mock("leaflet", () => ({ divIcon: (options) => options }));
 
 import { CentreCommuteView } from "../../src/commute/CentreCommute.jsx";
 
@@ -233,9 +234,224 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("Leg 1: Home → Centre");
     expect(html).toContain("Leg 2: Centre → Workplace");
     expect(html).toContain("Total travel: 25 mins (12.0 km)");
-    // Leg 1 is solid (#2563eb), Leg 2 is dashed (#059669)
+    // Each via-centre leg uses a distinct solid stroke.
     expect(html).toContain("#2563eb");
-    expect(html).toContain("#059669");
+    expect(html).toContain("#07805f");
+  });
+
+  it("shows certified direct and via routes with raw-second commute deviation", () => {
+    const anchors = {
+      home: { lat: 1.3, lng: 103.8 },
+      centre: { lat: 1.35, lng: 103.85 },
+      workplace: { lat: 1.28, lng: 103.85 },
+    };
+    const timing = {
+      duration_basis: "provider_default",
+      arrival_source: "not_applicable",
+      initial_wait_included: null,
+    };
+    const data = {
+      centre_id: 101,
+      profile_id: "prof-1",
+      mode: "drive",
+      comparison_contract: "direct_baseline_v1",
+      anchors,
+      evaluation: {
+        evaluation_id: "eval-1",
+        evaluated_at: "2026-11-07T03:00:00Z",
+        profile_revision: "profile-rev-1",
+        anchor_revision: "anchor-rev-1",
+      },
+      samples: [{
+        kind: "single",
+        conditions: {
+          conditions_id: "drive-default-v1",
+          timing_basis: "provider_default",
+          initial_departure_at: null,
+          provider_options_id: "onemap-drive-v1",
+        },
+        via_status: "available",
+        legs: [
+          { from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap", duration_seconds: 1000, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }], timing, reasons: [] },
+          { from_anchor: "centre", to_anchor: "workplace", status: "available", source: "onemap", duration_seconds: 1491, distance_meters: 7000, geometry: [{ lat: 1.35, lng: 103.85 }, { lat: 1.28, lng: 103.85 }], timing, reasons: [] },
+        ],
+        totals: { duration_seconds: 2491, distance_meters: 12000 },
+        reasons: [],
+        direct_route: {
+          status: "available",
+          legs: [{ from_anchor: "home", to_anchor: "workplace", status: "available", source: "onemap", duration_seconds: 1829, distance_meters: 9000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.28, lng: 103.85 }], timing, reasons: [] }],
+          totals: { duration_seconds: 1829, distance_meters: 9000 },
+          reasons: [],
+        },
+        comparison: {
+          status: "available",
+          reasons: [],
+          certification: { duration_basis: "provider_default", provider_options_id: "onemap-drive-v1" },
+        },
+      }],
+    };
+    const html = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "prof-1", workplaceConfigured: true,
+      centre: { id: 101, name: "Star Preschool" }, loading: false, data,
+      mode: "drive", directBaselineStatus: "supported",
+    }));
+
+    expect(html).toContain("11 min extra travel");
+    expect(html).toContain("Via centre 42 mins");
+    expect(html).toContain("Direct 30 mins");
+    expect(html).toContain("Times rounded");
+    expect(html).toContain("Direct home to workplace");
+    expect(html).toContain("Home to centre");
+    expect(html).toContain("Centre to workplace");
+    expect(html).toContain("Show all routes");
+    expect(html).toContain("data-deviation-seconds=\"662\"");
+    expect(html).toContain('data-options="{&quot;color&quot;:&quot;#59636e&quot;');
+
+    data.samples[0].comparison = { status: "unavailable", reasons: [{ code: "timing_unverified", failure_class: "conditions", retryable: false }], certification: null };
+    const timingUnavailable = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "prof-1", workplaceConfigured: true,
+      centre: { id: 101, name: "Star Preschool" }, loading: false, data,
+      mode: "drive", directBaselineStatus: "supported",
+    }));
+    expect(timingUnavailable).toContain("Direct home to workplace");
+    expect(timingUnavailable).toContain("Extra travel unavailable");
+    expect(timingUnavailable).not.toContain("data-deviation-seconds");
+    data.samples[0].comparison = {
+      status: "available", reasons: [],
+      certification: { duration_basis: "provider_default", provider_options_id: "onemap-drive-v1" },
+    };
+
+    const renderUpdated = () => renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "prof-1", workplaceConfigured: true,
+      centre: { id: 101, name: "Star Preschool" }, loading: false, data,
+      mode: "drive", directBaselineStatus: "supported",
+    }));
+    const viaLegs = data.samples[0].legs;
+    viaLegs[0].duration_seconds = 2520;
+    viaLegs[1].duration_seconds = 0;
+    data.samples[0].totals.duration_seconds = 2520;
+    data.samples[0].direct_route.legs[0].duration_seconds = 1800;
+    data.samples[0].direct_route.totals.duration_seconds = 1800;
+    expect(renderUpdated()).toContain("12 min extra travel");
+
+    viaLegs[0].duration_seconds = 1919;
+    viaLegs[1].duration_seconds = 0;
+    data.samples[0].totals.duration_seconds = 1919;
+    data.samples[0].direct_route.legs[0].duration_seconds = 1829;
+    data.samples[0].direct_route.totals.duration_seconds = 1829;
+    expect(renderUpdated()).toContain("2 min extra travel");
+
+    viaLegs[0].duration_seconds = 1859;
+    data.samples[0].totals.duration_seconds = 1859;
+    expect(renderUpdated()).toContain("Less than 1 min extra travel");
+
+    viaLegs[0].duration_seconds = 1200;
+    data.samples[0].totals.duration_seconds = 1200;
+    data.samples[0].direct_route.legs[0].duration_seconds = 1800;
+    data.samples[0].direct_route.totals.duration_seconds = 1800;
+    const negativeHtml = renderUpdated();
+    expect(negativeHtml).toContain("No extra travel");
+    expect(negativeHtml).toContain('data-deviation-seconds="-600"');
+  });
+
+  it("withholds deviation when the response marker or timing certification is missing", () => {
+    const sample = {
+      kind: "single",
+      conditions: { conditions_id: "drive", timing_basis: "provider_default", provider_options_id: "opts" },
+      via_status: "available",
+      legs: [
+        { from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap", duration_seconds: 100, distance_meters: 1000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }] },
+        { from_anchor: "centre", to_anchor: "workplace", status: "available", source: "onemap", duration_seconds: 100, distance_meters: 1000, geometry: [{ lat: 1.35, lng: 103.85 }, { lat: 1.28, lng: 103.85 }] },
+      ],
+      totals: { duration_seconds: 200, distance_meters: 2000 },
+      direct_route: { status: "available", legs: [{ from_anchor: "home", to_anchor: "workplace", status: "available", source: "onemap", duration_seconds: 100, distance_meters: 1000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.28, lng: 103.85 }] }], totals: { duration_seconds: 100, distance_meters: 1000 }, reasons: [] },
+      comparison: { status: "available", reasons: [], certification: { duration_basis: "provider_default", provider_options_id: "opts" } },
+    };
+    const data = {
+      centre_id: 101, profile_id: "prof-1", mode: "drive",
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 }, workplace: { lat: 1.28, lng: 103.85 } },
+      evaluation: { evaluation_id: "eval", evaluated_at: "2026-11-07T03:00:00Z", profile_revision: "p1", anchor_revision: "a1" },
+      samples: [sample],
+    };
+    const html = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "prof-1", workplaceConfigured: true,
+      centre: { id: 101 }, loading: false, data, mode: "drive", directBaselineStatus: "supported",
+    }));
+
+    expect(html).not.toContain("extra travel</strong>");
+    expect(html).toContain("Extra travel unavailable");
+    expect(html).toContain("Total travel: 3 mins");
+    expect(html).not.toContain("Direct home to workplace");
+  });
+
+  it("retains a complete direct route and its map when the known centre location is unresolved", () => {
+    const timing = { duration_basis: "provider_default", arrival_source: "not_applicable", initial_wait_included: null };
+    const data = {
+      centre_id: 101, profile_id: "prof-1", mode: "drive", comparison_contract: "direct_baseline_v1",
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: null, workplace: { lat: 1.28, lng: 103.85 } },
+      evaluation: { evaluation_id: "eval", evaluated_at: "2026-11-07T03:00:00Z", profile_revision: "p1", anchor_revision: "a1" },
+      samples: [{
+        kind: "single", conditions: { conditions_id: "drive", timing_basis: "provider_default", initial_departure_at: null, provider_options_id: "opts" },
+        via_status: "partial", reasons: [{ code: "centre_location_unavailable", failure_class: "location", retryable: false }],
+        legs: [{ from_anchor: "home", to_anchor: "centre", status: "unavailable", source: null, duration_seconds: null, distance_meters: null, geometry: null, timing, reasons: [{ code: "centre_location_unavailable", failure_class: "location", retryable: false }] }],
+        totals: null,
+        direct_route: {
+          status: "available", reasons: [],
+          legs: [{ from_anchor: "home", to_anchor: "workplace", status: "available", source: "onemap", duration_seconds: 800, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.28, lng: 103.85 }], timing, reasons: [] }],
+          totals: { duration_seconds: 800, distance_meters: 5000 },
+        },
+        comparison: { status: "unavailable", reasons: [{ code: "location_unavailable", failure_class: "location", retryable: false }], certification: null },
+      }],
+    };
+    const html = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "prof-1", workplaceConfigured: true,
+      centre: { id: 101, name: "Star Preschool" }, loading: false, data,
+      mode: "drive", directBaselineStatus: "supported",
+    }));
+
+    expect(html).toContain("Direct home to workplace");
+    expect(html).toContain("13 mins (5.0 km)");
+    expect(html).not.toContain("Total travel:");
+    expect(html).toContain("data-testid=\"centre-commute-map\"");
+    expect(html).not.toContain('data-alt="Centre"');
+  });
+
+  it("requires certified PT elapsed timing and zero dwell before showing a comparison", () => {
+    const departure = "2026-11-11T08:00:00+08:00";
+    const firstArrival = "2026-11-11T08:15:00+08:00";
+    const timing = { duration_basis: "elapsed_from_requested_departure", arrival_source: "provider_end_time", initial_wait_included: true };
+    const viaLegs = [
+      { from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap", duration_seconds: 900, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }], timing, departure_at: departure, arrival_at: firstArrival, reasons: [] },
+      { from_anchor: "centre", to_anchor: "workplace", status: "available", source: "onemap", duration_seconds: 900, distance_meters: 5000, geometry: [{ lat: 1.35, lng: 103.85 }, { lat: 1.28, lng: 103.85 }], timing, departure_at: firstArrival, arrival_at: "2026-11-11T08:30:00+08:00", reasons: [] },
+    ];
+    const data = {
+      centre_id: 101, profile_id: "prof-1", mode: "pt", comparison_contract: "direct_baseline_v1",
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 }, workplace: { lat: 1.28, lng: 103.85 } },
+      evaluation: { evaluation_id: "eval-pt", evaluated_at: "2026-11-07T03:00:00Z", profile_revision: "p1", anchor_revision: "a1" },
+      samples: [{
+        kind: "weekday", conditions: { conditions_id: "pt-wed", timing_basis: "scheduled_departure", initial_departure_at: departure, provider_options_id: "pt-options" },
+        via_status: "available", reasons: [], legs: viaLegs, totals: { duration_seconds: 1800, distance_meters: 10000 },
+        direct_route: {
+          status: "available", reasons: [],
+          legs: [{ from_anchor: "home", to_anchor: "workplace", status: "available", source: "onemap", duration_seconds: 1500, distance_meters: 8000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.28, lng: 103.85 }], timing, departure_at: departure, arrival_at: "2026-11-11T08:25:00+08:00", reasons: [] }],
+          totals: { duration_seconds: 1500, distance_meters: 8000 },
+        },
+        comparison: { status: "available", reasons: [], certification: { duration_basis: "elapsed_from_requested_departure", provider_options_id: "pt-options" } },
+      }],
+    };
+    const render = () => renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "prof-1", workplaceConfigured: true,
+      centre: { id: 101 }, loading: false, data, mode: "pt", directBaselineStatus: "supported",
+    }));
+
+    const valid = render();
+    expect(valid).toContain("5 min extra travel");
+    expect(valid).not.toContain("2026-11-11");
+    viaLegs[1].departure_at = "2026-11-11T08:16:00+08:00";
+    const contradictory = render();
+    expect(contradictory).not.toContain("5 min extra travel");
+    expect(contradictory).toContain("Direct home to workplace");
+    expect(contradictory).toContain("Extra travel unavailable");
   });
 
   it("withholds complete totals and shows retry when a leg is unavailable", () => {
@@ -804,7 +1020,7 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("40 mins (3.2 km)");
     expect(html).toContain("Total travel: 1 hr 10 mins (5.7 km)");
     expect(html).toContain("#2563eb");
-    expect(html).toContain("#059669");
+    expect(html).toContain("#07805f");
   });
 
   it("withholds totals and offers retry for partial cycling journey failure", () => {

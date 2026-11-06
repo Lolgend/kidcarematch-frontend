@@ -61,7 +61,7 @@ export async function apiRequest(endpoint, options = {}) {
       }`
     );
     error.status = response.status;
-    error.code = detailObject.code || (typeof body?.detail === "string" ? body.detail : null);
+    error.code = detailObject.code || body?.code || (typeof body?.detail === "string" ? body.detail : null);
     error.failureClass = detailObject.failure_class || null;
     error.sampling = detailObject.sampling || body?.sampling || null;
     throw error;
@@ -101,6 +101,9 @@ const qs = (params = {}) => {
 // PRESCHOOL CENTRES
 // ==========================================
 
+export const getCommuteCapabilities = (options = {}) =>
+  apiRequest("/api/v1/commute/capabilities", { method: "GET", ...options });
+
 export const getCentres = (params = {}) =>
   apiRequest(`/api/v1/centres${qs(params)}`);
 
@@ -126,12 +129,15 @@ export const getCentreLocation = (centreId, options = {}) =>
     options
   );
 
-export const getCommuteCapabilities = (options = {}) =>
-  apiRequest("/api/v1/commute/capabilities", options);
-
 export const getCentreCommute = (
   centreId,
-  { profileId, mode = "drive", samplePair = null, includeDirectBaseline = false, sampling = null } = {},
+  {
+    profileId,
+    mode = "drive",
+    samplePair = null,
+    includeDirectBaseline = false,
+    sampling = null,
+  } = {},
   options = {}
 ) => {
   if (sampling !== null) {
