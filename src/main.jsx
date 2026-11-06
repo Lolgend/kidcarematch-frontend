@@ -400,6 +400,16 @@ function focusCentreOriginControl(origin) {
   focus();
 }
 
+function matchControlsFromOrigin(origin) {
+  const budget = Number(origin?.matchControls?.budget);
+  const weights = origin?.matchControls?.weights;
+  const validWeights = weights && ['vacancy', 'cost', 'travel'].every((key) => [15, 35, 50].includes(Number(weights[key]))) &&
+    Number(weights.vacancy) + Number(weights.cost) + Number(weights.travel) === 100 &&
+    new Set(['vacancy', 'cost', 'travel'].map((key) => Number(weights[key]))).size === 3;
+  if (!Number.isFinite(budget) || budget < 1 || budget > 1000000 || !validWeights) return null;
+  return { budget, weights: { vacancy: Number(weights.vacancy), cost: Number(weights.cost), travel: Number(weights.travel) } };
+}
+
 // Dropdown list of vacancy alerts for watchlisted centres.
 function NotificationPanel({ items, unread, error, onOpen, onReadAll }) {
   return (
@@ -585,10 +595,21 @@ function App() {
     setMatchForm({ level: p.level, citizenship: p.citizenship, home: p.home, work: p.work || '' });
     setBudget(Number(p.budget));
     setWeights(p.weights);
+    setRestoredMatchSnapshot(null);
     setMatchRun(null);
     setMatchCandidates([]);
     setMatchStatus('idle');
     setMatchMessage('');
+  };
+
+  const restoreMatchingOrigin = (origin) => {
+    const controls = matchControlsFromOrigin(origin);
+    if (controls) {
+      setBudget(controls.budget);
+      setWeights(controls.weights);
+    }
+    setRestoredMatchSnapshot(origin.matchSnapshot);
+    setMatchStatus('loading');
   };
 
   const [onboardingState, setOnboardingState] = useState(() => ({
@@ -622,8 +643,7 @@ function App() {
     setPageOffset(Number(context.pageOffset) || 0);
     setCompareSelectedIds(Array.isArray(context.compareSelectedIds) ? context.compareSelectedIds : []);
     if (restoredPage === 'Find my matches' && Array.isArray(context.matchSnapshot)) {
-      setRestoredMatchSnapshot(context.matchSnapshot);
-      setMatchStatus('loading');
+      restoreMatchingOrigin(context);
     }
     centreReturnRestoredRef.current = true;
     window.requestAnimationFrame(() => window.scrollTo(0, Math.max(0, Number(context.scrollY) || 0)));
@@ -1002,7 +1022,8 @@ function App() {
           level,
           pageOffset,
           compareSelectedIds,
-          matchSnapshot: page === 'Find my matches' ? ranked.slice(0, 10).map(({ id, score, fee, vf, cf, tf, vacancyLabel, locationLabel }) => ({ id: String(id), score, fee, vf, cf, tf, vacancyLabel, locationLabel })) : null,
+          matchSnapshot: page === 'Find my matches' ? ranked.map(({ id, score, fee, vf, cf, tf, vacancyLabel, locationLabel }) => ({ id: String(id), score, fee, vf, cf, tf, vacancyLabel, locationLabel })) : null,
+          matchControls: page === 'Find my matches' ? { budget: Number(budget), weights: { ...weights } } : null,
           scrollY: window.scrollY,
           focusCentreId: String(centre.id),
         };
@@ -1094,8 +1115,7 @@ function App() {
           setPageOffset(Number(origin.pageOffset) || 0);
           setCompareSelectedIds(Array.isArray(origin.compareSelectedIds) ? origin.compareSelectedIds : []);
           if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
-            setRestoredMatchSnapshot(origin.matchSnapshot);
-            setMatchStatus('loading');
+            restoreMatchingOrigin(origin);
           }
         }
         return;
@@ -1422,7 +1442,10 @@ function App() {
 };
   // Priorities can be tweaked right on the matches page; results re-rank instantly
   // and the change is saved back to the family profile.
-  const updateRank = (key, rank) => setWeights((current) => setRank(current, key, rank));
+  const updateRank = (key, rank) => {
+    setRestoredMatchSnapshot(null);
+    setWeights((current) => setRank(current, key, rank));
+  };
 
   useEffect(() => {
     if (!profile || !currentUser) return undefined;
@@ -2354,7 +2377,7 @@ function App() {
                         <div><dt>Citizenship (for fees)</dt><dd>{CITIZENSHIP_LABELS[profile.citizenship]}</dd></div>
                         <div><dt>Home postal code</dt><dd>{profile.home}</dd></div>
                         <div><dt>Workplace postal code</dt><dd>{profile.work || 'Not set'}</dd></div>
-                        <div><dt>Monthly budget</dt><dd>${profile.budget}</dd></div>
+                        <div><dt>Monthly budget</dt><dd>${budget}</dd></div>
                         <div><dt>Enrolment month</dt><dd>{profile.enrolMonth}</dd></div>
                       </dl>
 
@@ -2953,8 +2976,7 @@ function App() {
                 setPageOffset(Number(origin.pageOffset) || 0);
                 setCompareSelectedIds(Array.isArray(origin.compareSelectedIds) ? origin.compareSelectedIds : []);
                 if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
-                  setRestoredMatchSnapshot(origin.matchSnapshot);
-                  setMatchStatus('loading');
+                  restoreMatchingOrigin(origin);
                 }
               } else {
                 centreReturnOriginRef.current = null;
