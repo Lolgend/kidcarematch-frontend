@@ -102,6 +102,38 @@
 .detail-modal>h1{margin-top:0}
 @media(max-width:600px){.detail-modal{padding:26px 18px 22px}}
 
+/* Full centre destination: the page inherits KidCareMatch's quiet green surfaces. */
+.app-shell.centre-page-active{display:block;min-height:100vh;background:#f6f8f4}
+.app-shell.centre-page-active>:not(.centre-details-page):not(.auth-overlay){display:none!important}
+.centre-details-page{min-height:100vh;padding:24px clamp(18px,4vw,56px) 64px;color:#25372d}
+.centre-details-inner{width:min(1280px,100%);margin:0 auto}
+.centre-details-return{display:inline-flex;align-items:center;gap:8px;margin:0 0 22px;color:#477b51;font-size:13px;font-weight:700;text-decoration:none}
+.centre-details-return:hover{text-decoration:underline}
+.centre-details-heading{margin-bottom:28px}
+.centre-details-heading h1{margin:0 0 7px;font-size:clamp(28px,3vw,40px);line-height:1.15;letter-spacing:-.04em;color:#24372c}
+.centre-details-heading h1:focus{outline:none}
+.centre-details-heading p{margin:0;color:#65756a;font-size:14px;line-height:1.6}
+.centre-details-rating{display:flex;align-items:center;gap:7px;margin-top:12px;color:#c18c32;font-size:14px}
+.centre-details-rating strong{color:#34483a}.centre-details-rating span{color:#7b887e;font-size:12px}
+.centre-details-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(260px,1fr);gap:24px;align-items:start}
+.centre-details-primary,.centre-details-facts,.parent-reviews{min-width:0;background:#fff;border:1px solid #e6ece3;border-radius:16px;box-shadow:0 8px 28px #29432d0a}
+.centre-details-primary{padding:16px}
+.centre-details-primary .centre-map-wrapper{height:auto;aspect-ratio:16/9;min-height:320px;max-height:527px;border-radius:12px;overflow:hidden}
+.centre-details-primary .centre-map-section>.centre-map-unavailable,.centre-details-primary .centre-map-section>.centre-map-loading{display:grid;place-items:center;aspect-ratio:16/9;min-height:280px;max-height:527px;border-radius:12px}
+.centre-details-facts{padding:22px 24px}
+.centre-details-facts h2{margin:0 0 14px;font-size:17px;color:#2f4435}
+.centre-details-facts p{display:grid;gap:5px;margin:0;padding:12px 0;border-bottom:1px solid #eef1eb;font-size:13px;line-height:1.45;color:#56685b;overflow-wrap:anywhere}
+.centre-details-facts p:last-child{border-bottom:0}
+.centre-details-facts p b{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#8a968c}
+.centre-details-facts a{display:flex;align-items:center;gap:4px;color:#477b51;text-decoration:none;font-weight:650}
+.centre-details-facts a:hover{text-decoration:underline}
+.skip-centre-map{display:inline-block;margin:0 0 12px;color:#477b51;font-size:12px;font-weight:700}
+.centre-details-page .parent-reviews{margin-top:24px;padding:24px}
+.centre-details-loading,.centre-details-error{padding:38px;background:#fff;border:1px solid #e6ece3;border-radius:16px;color:#65756a}
+.centre-details-error h1{margin:0 0 8px;color:#2f4435}
+@media(max-width:900px){.centre-details-grid{grid-template-columns:1fr}.centre-details-facts{order:2}}
+@media(max-width:700px){.centre-details-page{padding:18px 16px 40px}.centre-details-return{margin-bottom:18px}.centre-details-heading{margin-bottom:20px}.centre-details-primary{padding:10px}.centre-details-primary .centre-map-wrapper{min-height:280px;aspect-ratio:auto}.centre-details-primary .centre-map-section>.centre-map-unavailable,.centre-details-primary .centre-map-section>.centre-map-loading{min-height:280px;aspect-ratio:auto}.centre-details-page .parent-reviews{padding:17px}.centre-details-facts{padding:19px}}
+
 
 /* Login / sign-up card: larger app name */
 .auth-card .auth-mark {

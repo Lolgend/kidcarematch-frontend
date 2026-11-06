@@ -339,7 +339,7 @@ export function CentreCommuteView({
           </div> : <div className="centre-map-unavailable" role="status">Map view is currently unavailable for this centre.</div>}
 
           {/* Readable text breakdown */}
-          <div className="commute-breakdown" aria-label="Journey breakdown">
+          <div className="commute-breakdown" id="centre-commute-summary" tabIndex={-1} aria-label="Journey breakdown">
             {legs.map((leg, idx) => {
               const isLeg1 = leg.from_anchor === "home";
               const legTitle = isLeg1 ? "Leg 1: Home → Centre" : "Leg 2: Centre → Workplace";
