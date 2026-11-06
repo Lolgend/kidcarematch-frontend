@@ -131,6 +131,38 @@ describe("getCentreCommute API client", () => {
     );
   });
 
+  it("sends selected sampling opt-in without changing legacy request bodies", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, { sampling_contract: "weekday_0800_wed_thu_fri_v1" }));
+    await api.getCentreCommute(101, {
+      profileId: "prof-1", mode: "pt", sampling: {
+        policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "cycle-a", sample_index: 1,
+      },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      profile_id: "prof-1", mode: "pt", sampling: {
+        policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "cycle-a", sample_index: 1,
+      },
+    });
+  });
+
+  it("rejects contradictory or malformed selected sampling before making a request", async () => {
+    const sampling = { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 };
+    expect(() => api.getCentreCommute(101, { profileId: "prof-1", mode: "drive", sampling })).toThrow(/only valid for public transport/);
+    expect(() => api.getCentreCommute(101, { profileId: "prof-1", mode: "pt", samplePair: ["wed", "sat"], sampling })).toThrow(/cannot be combined/);
+    expect(() => api.getCentreCommute(101, { profileId: "prof-1", mode: "pt", sampling: { ...sampling, sample_index: 1 } })).toThrow(/Invalid selected weekday/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("discovers independent commute capabilities", async () => {
+    const capabilities = { direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" };
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, capabilities));
+    await expect(api.getCommuteCapabilities()).resolves.toEqual(capabilities);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.invalid/api/v1/commute/capabilities",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer test-token" }) })
+    );
+  });
+
   it("rejects on HTTP error response", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(vi, { detail: "Preference profile not found" }, 404)

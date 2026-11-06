@@ -45,18 +45,26 @@ export async function apiRequest(endpoint, options = {}) {
     : await response.text();
 
   if (!response.ok) {
+    const detailObject = typeof body === "object" && body?.detail && typeof body.detail === "object"
+      ? body.detail
+      : (typeof body === "object" ? body : {});
     const detail =
       typeof body === "object"
         ? (body.detail?.code || body.detail?.message || body.detail || body.message)
         : body;
 
-    throw new Error(
+    const error = new Error(
       `${response.status}: ${
         typeof detail === "string"
           ? detail
           : "API request failed"
       }`
     );
+    error.status = response.status;
+    error.code = detailObject.code || (typeof body?.detail === "string" ? body.detail : null);
+    error.failureClass = detailObject.failure_class || null;
+    error.sampling = detailObject.sampling || body?.sampling || null;
+    throw error;
   }
 
   return body;
@@ -118,12 +126,25 @@ export const getCentreLocation = (centreId, options = {}) =>
     options
   );
 
+export const getCommuteCapabilities = (options = {}) =>
+  apiRequest("/api/v1/commute/capabilities", options);
+
 export const getCentreCommute = (
   centreId,
-  { profileId, mode = "drive", samplePair = null } = {},
+  { profileId, mode = "drive", samplePair = null, includeDirectBaseline = false, sampling = null } = {},
   options = {}
-) =>
-  apiRequest(
+) => {
+  if (sampling !== null) {
+    if (mode !== "pt") throw new TypeError("Selected weekday sampling is only valid for public transport");
+    if (samplePair !== null) throw new TypeError("Selected weekday sampling cannot be combined with a legacy sample pair");
+    if (sampling?.policy !== "weekday_0800_wed_thu_fri_v1" ||
+      ![0, 1, 2].includes(sampling?.sample_index) ||
+      !(sampling.cycle_id === null || (typeof sampling.cycle_id === "string" && sampling.cycle_id.trim().length > 0)) ||
+      (sampling.cycle_id === null && sampling.sample_index !== 0)) {
+      throw new TypeError("Invalid selected weekday sampling request");
+    }
+  }
+  return apiRequest(
     `/api/v1/centres/${encodeURIComponent(centreId)}/commute`,
     {
       method: "POST",
@@ -131,10 +152,13 @@ export const getCentreCommute = (
         profile_id: profileId,
         mode,
         ...(samplePair ? { sample_pair: samplePair } : {}),
+        ...(includeDirectBaseline ? { include_direct_baseline: true } : {}),
+        ...(sampling ? { sampling } : {}),
       }),
       ...options,
     }
   );
+};
 
 // ==========================================
 // CENTRE REVIEWS

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCommuteSession,
   getSessionMode,
@@ -45,12 +45,37 @@ describe("createCommuteSession controller", () => {
     ],
   });
 
+  const selectedCycleResponse = (centreId, index, {
+    cycleId = "timer-cycle-1",
+    primary = "2026-11-11T08:00:00+08:00",
+    unavailable = false,
+  } = {}) => {
+    const allowed = [0, 1, 2].map((sampleIndex) => ({
+      sample_index: sampleIndex,
+      conditions_id: `${cycleId}-${sampleIndex}`,
+      departure_at: new Date(Date.parse(primary) + sampleIndex * 86400000).toISOString(),
+    }));
+    return {
+      centre_id: centreId, profile_id: "prof-1", mode: "pt", sample_pair: null,
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+      evaluation: { evaluation_id: `${cycleId}-${centreId}-${index}`, evaluated_at: "2026-11-10T08:00:00+08:00", profile_revision: "timer-profile-r1", anchor_revision: `timer-anchor-${centreId}` },
+      sampling: { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: cycleId, cycle_expires_at: primary, selected_index: index, allowed_samples: allowed },
+      samples: [{ kind: "weekday", sampled_at: allowed[index].departure_at, via_status: unavailable ? "unavailable" : "available", reasons: unavailable ? [{ code: "no_itinerary", failure_class: "sample_dependent", retryable: false }] : [], legs: [], conditions: { conditions_id: allowed[index].conditions_id, timing_basis: "scheduled_departure", initial_departure_at: allowed[index].departure_at, provider_options_id: "timer-options-r1" }, totals: unavailable ? null : { duration_seconds: 1200, distance_meters: 4000 } }],
+    };
+  };
+
   beforeEach(() => {
+    session?.destroy();
     resetRetainedSessionMode();
     states = [];
     loadCommute = vi.fn().mockImplementation(async (centreId, { mode }) => {
       return mockCommute(centreId, mode);
     });
+  });
+
+  afterEach(() => {
+    session?.destroy();
+    vi.useRealTimers();
   });
 
   it("initializes with drive mode and loads commute when open is called", async () => {
@@ -482,5 +507,275 @@ describe("createCommuteSession controller", () => {
     resetSessionMode();
     expect(getSessionMode(null)).toBe("drive");
     expect(getSessionSamplePair(null)).toBe(null);
+  });
+
+  it("advances a shared centre set together when one centre has a classified sample-dependent failure", async () => {
+    const capabilities = vi.fn().mockResolvedValue({
+      direct_baseline_contract: "future_direct_baseline",
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+    });
+    const conditions = [
+      { sample_index: 0, conditions_id: "pt-wed", departure_at: "2026-11-11T08:00:00+08:00" },
+      { sample_index: 1, conditions_id: "pt-thu", departure_at: "2026-11-12T08:00:00+08:00" },
+      { sample_index: 2, conditions_id: "pt-fri", departure_at: "2026-11-13T08:00:00+08:00" },
+    ];
+    const selectedResponse = (id, index, unavailable = false) => ({
+      centre_id: id,
+      profile_id: "prof-1",
+      mode: "pt",
+      sample_pair: null,
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+      evaluation: { evaluation_id: `evaluation-${id}`, evaluated_at: "2026-11-07T09:00:00+08:00", profile_revision: "profile-rev-1", anchor_revision: `anchor-${id}` },
+      sampling: {
+        policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "cycle-issued-by-server",
+        cycle_expires_at: "2026-11-11T08:00:00+08:00", selected_index: index,
+        allowed_samples: conditions,
+      },
+      samples: [{
+        kind: "weekday", sampled_at: conditions[index].departure_at,
+        conditions: {
+          conditions_id: conditions[index].conditions_id,
+          timing_basis: "scheduled_departure",
+          initial_departure_at: conditions[index].departure_at,
+          provider_options_id: "pt-options-1",
+        },
+        via_status: unavailable ? "unavailable" : "available",
+        reasons: unavailable ? [{ code: "no_itinerary", failure_class: "sample_dependent", retryable: false }] : [],
+        totals: unavailable ? null : { duration_seconds: String(id) === "101" ? 1200 : 1800, distance_meters: 3000 },
+        legs: [],
+      }],
+    });
+    loadCommute = vi.fn().mockImplementation(async (id, request) => {
+      if (request.sampling.sample_index === 0 && String(id) === "202") return selectedResponse(id, 0, true);
+      return selectedResponse(id, request.sampling.sample_index);
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: capabilities,
+      selectedSamplingEnabled: true,
+      comparisonCentreIds: [101, 202],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+      userId: "user-1",
+      onState: (state) => states.push(state),
+    });
+
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1", locationKey: "home-rev-1" });
+
+    expect(loadCommute.mock.calls.map(([, request]) => request.sampling)).toEqual([
+      { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 },
+      { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "cycle-issued-by-server", sample_index: 0 },
+      { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "cycle-issued-by-server", sample_index: 1 },
+      { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "cycle-issued-by-server", sample_index: 1 },
+    ]);
+    expect(session.getState().sampling.selected_index).toBe(1);
+    expect(Object.keys(session.getState().setData)).toEqual(["101", "202"]);
+    expect(session.getState().setData["101"].samples[0].totals.duration_seconds).toBe(1200);
+    expect(session.getState().setData["202"].samples[0].totals.duration_seconds).toBe(1800);
+
+    const nextCentreSession = createCommuteSession({
+      loadCommute,
+      getCapabilities: capabilities,
+      selectedSamplingEnabled: true,
+      comparisonCentreIds: [303],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+      userId: "user-1",
+    });
+    await nextCentreSession.open({ centreId: 303, profileId: "prof-1", locationKey: "home-rev-1" });
+    expect(loadCommute.mock.calls.at(-1)[1].sampling).toEqual({
+      policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "cycle-issued-by-server", sample_index: 1,
+    });
+  });
+
+  it("keeps selected sampling off when its independent release control is false", async () => {
+    const getCapabilities = vi.fn();
+    session = createCommuteSession({ loadCommute, getCapabilities, selectedSamplingEnabled: false });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(getCapabilities).not.toHaveBeenCalled();
+    expect(loadCommute).toHaveBeenCalledWith(
+      101,
+      { profileId: "prof-1", mode: "pt", samplePair: null },
+      expect.any(Object)
+    );
+  });
+
+  it("does not advance dates for an authentication failure", async () => {
+    const authenticationError = Object.assign(new Error("401: unauthenticated"), { status: 401, code: "unauthenticated" });
+    loadCommute = vi.fn().mockRejectedValue(authenticationError);
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      onState: (state) => states.push(state),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(loadCommute).toHaveBeenCalledTimes(1);
+    expect(loadCommute.mock.calls[0][1].sampling.sample_index).toBe(0);
+    expect(session.getState().error).toBe(authenticationError);
+  });
+
+  it("refreshes the whole selected cycle if its Wednesday boundary passes during an evaluation", async () => {
+    let clock = new Date("2026-11-11T07:59:59+08:00");
+    const cycles = [
+      { id: "cycle-before-expiry", wed: "2026-11-11T08:00:00+08:00" },
+      { id: "cycle-after-expiry", wed: "2026-11-18T08:00:00+08:00" },
+    ];
+    const makeResponse = (cycle, index) => {
+      const dates = cycle.id === "cycle-after-expiry"
+        ? [cycle.wed, "2026-11-19T08:00:00+08:00", "2026-11-20T08:00:00+08:00"]
+        : [cycle.wed, "2026-11-12T08:00:00+08:00", "2026-11-13T08:00:00+08:00"];
+      return {
+        centre_id: 101, profile_id: "prof-1", mode: "pt", sample_pair: null,
+        sampling_contract: "weekday_0800_wed_thu_fri_v1",
+        evaluation: { evaluation_id: `eval-${cycle.id}`, evaluated_at: "2026-11-11T07:59:59+08:00", profile_revision: "profile-r1", anchor_revision: "anchor-r1" },
+        sampling: {
+          policy: "weekday_0800_wed_thu_fri_v1", cycle_id: cycle.id, cycle_expires_at: cycle.wed,
+          selected_index: index,
+          allowed_samples: dates.map((departure_at, sample_index) => ({ sample_index, departure_at, conditions_id: `${cycle.id}-${sample_index}` })),
+        },
+        samples: [{
+          kind: "weekday", sampled_at: dates[index], via_status: "available", reasons: [], legs: [],
+          conditions: { conditions_id: `${cycle.id}-${index}`, timing_basis: "scheduled_departure", initial_departure_at: dates[index], provider_options_id: "pt-r1" },
+          totals: { duration_seconds: 900, distance_meters: 1000 },
+        }],
+      };
+    };
+    let evaluations = 0;
+    loadCommute = vi.fn(async () => {
+      const cycle = cycles[Math.min(evaluations, 1)];
+      const response = makeResponse(cycle, 0);
+      evaluations += 1;
+      if (evaluations === 1) clock = new Date("2026-11-11T08:00:00+08:00");
+      return response;
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      now: () => clock,
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(loadCommute).toHaveBeenCalledTimes(2);
+    expect(loadCommute.mock.calls.map(([, request]) => request.sampling)).toEqual([
+      { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 },
+      { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 },
+    ]);
+    expect(session.getState().sampling.cycle_id).toBe("cycle-after-expiry");
+    expect(session.getState().data.sampling.cycle_id).toBe("cycle-after-expiry");
+  });
+
+  it("stops after one recovery when the refreshed selected cycle is already expired", async () => {
+    const expired = Object.assign(new Error("409: sample_expired"), { status: 409, code: "sample_expired" });
+    loadCommute = vi.fn().mockRejectedValue(expired);
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(loadCommute).toHaveBeenCalledTimes(2);
+    expect(session.getState().error).toBe(expired);
+  });
+
+  it("clears Thursday results at Wednesday expiry and refreshes the active set once", async () => {
+    vi.useFakeTimers({ now: new Date("2026-11-10T08:00:00+08:00") });
+    let clock = new Date("2026-11-10T08:00:00+08:00");
+    let calls = 0;
+    loadCommute = vi.fn(async (id, request) => {
+      calls += 1;
+      if (calls === 1) return selectedCycleResponse(id, 0, { unavailable: true });
+      if (calls === 2) return selectedCycleResponse(id, 1);
+      return selectedCycleResponse(id, 0, { cycleId: "timer-cycle-2", primary: "2026-11-18T08:00:00+08:00" });
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      now: () => clock,
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(session.getState().sampling.selected_index).toBe(1);
+    expect(session.getState().data.sampling.cycle_id).toBe("timer-cycle-1");
+
+    clock = new Date("2026-11-11T08:00:00+08:00");
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+
+    expect(loadCommute).toHaveBeenCalledTimes(3);
+    expect(loadCommute.mock.calls[2][1].sampling).toEqual({
+      policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0,
+    });
+    expect(session.getState().data.sampling.cycle_id).toBe("timer-cycle-2");
+    session.destroy();
+    vi.useRealTimers();
+  });
+
+  it("does not start a new cycle automatically after fallback exhaustion at expiry", async () => {
+    vi.useFakeTimers({ now: new Date("2026-11-10T08:00:00+08:00") });
+    let clock = new Date("2026-11-10T08:00:00+08:00");
+    loadCommute = vi.fn(async (id, request) => selectedCycleResponse(id, request.sampling.sample_index, {
+      unavailable: true,
+      cycleId: request.sampling.cycle_id || "exhausted-cycle",
+    }));
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      now: () => clock,
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(loadCommute).toHaveBeenCalledTimes(3);
+    expect(session.getState().sampling.selected_index).toBe(2);
+
+    clock = new Date("2026-11-11T08:00:00+08:00");
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+
+    expect(loadCommute).toHaveBeenCalledTimes(3);
+    expect(session.getState().data).toBe(null);
+    expect(session.getState().setData).toEqual({});
+    expect(session.getState().error.message).toMatch(/Retry/);
+    session.destroy();
+    vi.useRealTimers();
+  });
+
+  it("rejects a delayed selected response after the active mode changes", async () => {
+    let resolveSelected;
+    const delayed = new Promise((resolve) => { resolveSelected = resolve; });
+    const dates = ["2026-11-11T08:00:00+08:00", "2026-11-12T08:00:00+08:00", "2026-11-13T08:00:00+08:00"];
+    loadCommute = vi.fn((id, request) => {
+      if (request.mode === "pt") return delayed;
+      return Promise.resolve(mockCommute(id, request.mode));
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      comparisonCentreIds: [101, 202],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    const selectedRequest = session.open({ centreId: 101, profileId: "prof-1" });
+    await Promise.resolve();
+    await session.setMode("drive");
+    resolveSelected({
+      centre_id: 101, profile_id: "prof-1", mode: "pt", sample_pair: null,
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+      evaluation: { evaluation_id: "late-evaluation", evaluated_at: "2026-11-07T09:00:00+08:00", profile_revision: "profile-r1", anchor_revision: "anchor-r1" },
+      sampling: { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "late-cycle", cycle_expires_at: dates[0], selected_index: 0,
+        allowed_samples: dates.map((departure_at, sample_index) => ({ departure_at, sample_index, conditions_id: `late-${sample_index}` })) },
+      samples: [{ kind: "weekday", sampled_at: dates[0], conditions: { conditions_id: "late-0", timing_basis: "scheduled_departure", initial_departure_at: dates[0], provider_options_id: "pt-r1" }, via_status: "available", reasons: [], legs: [], totals: { duration_seconds: 1000, distance_meters: 2000 } }],
+    });
+    await selectedRequest;
+    expect(session.getState().mode).toBe("drive");
+    expect(session.getState().data.mode).toBe("drive");
+    expect(session.getState().sampling).toBe(null);
+    expect(loadCommute.mock.calls.some(([id, request]) => String(id) === "202" && request.mode === "pt")).toBe(false);
   });
 });
