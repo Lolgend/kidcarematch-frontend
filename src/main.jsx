@@ -23,6 +23,7 @@ import AdminDashboard from './admin/AdminDashboard';
 import CentreCommute from './commute/CentreCommute';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
+import { centreDetailsPath, centreIdFromPath } from './centreDetailsRoute';
 import {
   getCentres,
   getCentreById,
@@ -446,14 +447,21 @@ function App() {
   const [fetchedCentres, setFetchedCentres] = useState({});
   const requestedIds = useRef(new Set());
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const detailRequestRef = useRef(0);
   const [detailReviews, setDetailReviews] = useState([]);
+  const [detailReviewsLoading, setDetailReviewsLoading] = useState(false);
+  const [detailReviewsError, setDetailReviewsError] = useState('');
   const [myCentreReview, setMyCentreReview] = useState(null);
+  const [myReviewLoading, setMyReviewLoading] = useState(false);
+  const [myReviewError, setMyReviewError] = useState('');
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState('');
   const [reviewSaving, setReviewSaving] = useState(false);
   const [pageOffset, setPageOffset] = useState(0);
   const [totalCentres, setTotalCentres] = useState(0);
   const [currentUser, setCurrentUser] = useState(null);
+  const [authResolved, setAuthResolved] = useState(false);
   const [page, setPage] = useState('Overview');
 
   // Hooks must live inside the component (this was at module level before).
@@ -595,6 +603,7 @@ function App() {
   }, [onboardingState]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [selectedCentre, setSelectedCentre] = useState(null);
+  const centreHeadingRef = useRef(null);
   const [authMode, setAuthMode] = useState('login');
   const [adminTab, setAdminTab] = useState('Users');
   const [users] = useState([]);
@@ -649,6 +658,7 @@ function App() {
       );
 
       setCurrentUser(user);
+      setAuthResolved(true);
 
       if (!user) {
         controller.cancel();
@@ -835,35 +845,89 @@ function App() {
     };
   }, [notifOpen]);
 
-  const openCentreDetails = async (centre) => {
+  const loadCentreDetails = async (centre, { pushHistory = false } = {}) => {
+    if (!centre?.id) return;
+    const requestGeneration = ++detailRequestRef.current;
+    const path = centreDetailsPath(centre.id);
+    if (pushHistory && path && window.location.pathname !== path) {
+      window.history.pushState({ ...(window.history.state || {}), centreDetails: true, returnPath: `${window.location.pathname}${window.location.search}` }, '', path);
+    }
     setSelectedCentre(centre);
     setDetailLoading(true);
+    setDetailError('');
     setDetailReviews([]);
+    setDetailReviewsLoading(true);
+    setDetailReviewsError('');
     setMyCentreReview(null);
+    setMyReviewLoading(Boolean(currentUser));
+    setMyReviewError('');
     setReviewRating(5);
     setReviewComment('');
-    try {
-      const reviewMineRequest = currentUser
-        ? getMyReview(centre.id).catch(() => null)
-        : Promise.resolve(null);
-      const [detail, reviewData, mine] = await Promise.all([
-        getCentreById(centre.id),
-        getCentreReviews(centre.id),
-        reviewMineRequest
-      ]);
-      setSelectedCentre(mapCentre({ ...centre, ...detail }));
-      setDetailReviews(reviewData?.items || []);
-      setMyCentreReview(mine);
-      if (mine) {
-        setReviewRating(Number(mine.rating) || 5);
-        setReviewComment(mine.review_description || '');
-      }
-    } catch (error) {
-      notify(`Could not load full centre details: ${error.message}`);
-    } finally {
-      setDetailLoading(false);
+    const requestId = String(centre.id);
+    const loadDetails = getCentreById(centre.id).then((detail) => {
+      if (requestGeneration === detailRequestRef.current) setSelectedCentre((current) => String(current?.id) === requestId ? mapCentre({ ...centre, ...detail }) : current);
+    }).catch((error) => {
+      if (requestGeneration === detailRequestRef.current) setDetailError(error.message?.includes('404') ? 'Centre not found' : 'Centre details could not be loaded. Try again.');
+    }).finally(() => { if (requestGeneration === detailRequestRef.current) setDetailLoading(false); });
+    getCentreReviews(centre.id).then((reviewData) => {
+      if (requestGeneration === detailRequestRef.current) setDetailReviews(reviewData?.items || []);
+    }).catch(() => {
+      if (requestGeneration === detailRequestRef.current) setDetailReviewsError('Published reviews could not be loaded.');
+    }).finally(() => {
+      if (requestGeneration === detailRequestRef.current) setDetailReviewsLoading(false);
+    });
+    const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
+    if (currentUser && centreViewerReady) {
+      getMyReview(centre.id).then((mine) => {
+        if (requestGeneration !== detailRequestRef.current) return;
+        setMyCentreReview(mine);
+        if (mine) {
+          setReviewRating(Number(mine.rating) || 5);
+          setReviewComment(mine.review_description || '');
+        }
+      }).catch(() => {
+        if (requestGeneration === detailRequestRef.current) setMyReviewError('Your review could not be loaded. Retry before writing a review.');
+      }).finally(() => {
+        if (requestGeneration === detailRequestRef.current) setMyReviewLoading(false);
+      });
+    } else {
+      setMyReviewLoading(false);
     }
+    return loadDetails;
   };
+
+  const openCentreDetails = (centre) => {
+    const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
+    if (currentUser && !centreViewerReady) {
+      notify('Please complete your family profile to access centre details.');
+      return;
+    }
+    loadCentreDetails(mapCentre(centre), { pushHistory: true });
+  };
+
+  useEffect(() => {
+    const restoreFromLocation = () => {
+      const centreId = centreIdFromPath(window.location.pathname);
+      if (!authResolved || centresLoading) return;
+      if (!centreId) {
+        setSelectedCentre(null);
+        return;
+      }
+      const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
+      if (currentUser && !centreViewerReady) return;
+      const permittedPreview = centres.slice(0, 6).some((centre) => String(centre.id) === centreId);
+      if (!currentUser && !permittedPreview) {
+        setSelectedCentre({ id: centreId, name: 'Sign in to view this centre' });
+        setDetailError('Please sign in to view centre details.');
+        setDetailLoading(false);
+        return;
+      }
+      loadCentreDetails(mapCentre(centres.find((centre) => String(centre.id) === centreId) || { id: centreId }));
+    };
+    window.addEventListener('popstate', restoreFromLocation);
+    if (window.location.pathname.startsWith('/centres/')) restoreFromLocation();
+    return () => window.removeEventListener('popstate', restoreFromLocation);
+  }, [authResolved, centres, centresLoading, currentUser, onboardingState.status]);
 
   const handleReviewSubmit = async (event) => {
     event.preventDefault();
@@ -905,6 +969,10 @@ function App() {
     currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
   const isOnboardingGated =
     Boolean(currentUser) && onboardingState.status !== 'ready' && !isAdmin;
+
+  useEffect(() => {
+    if (selectedCentre && !detailLoading && !isOnboardingGated) centreHeadingRef.current?.focus();
+  }, [selectedCentre?.id, detailLoading, isOnboardingGated]);
 
   useEffect(() => {
     if (isOnboardingGated) {
@@ -1440,7 +1508,7 @@ function App() {
   const yesNo = (value) => (value == null ? 'Not provided' : value ? 'Yes' : 'No');
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${selectedCentre && !isOnboardingGated ? ' centre-page-active' : ''}`}>
       <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
         <div className="brand">
           <div className="brand-mark"><Baby size={24} /></div>
@@ -2623,48 +2691,72 @@ function App() {
       )}
 
       {selectedCentre && !isOnboardingGated && (
-        <div className="modal-backdrop" onClick={() => setSelectedCentre(null)}>
-          <section className="detail-modal" onClick={(event) => event.stopPropagation()}>
-            <button className="modal-close" onClick={() => setSelectedCentre(null)}>
-              <X size={19} />
-            </button>
-            {detailLoading ? (
-              <p>Loading centre details…</p>
+        <main className="centre-details-page" id="centre-details-top">
+          <div className="centre-details-inner">
+            <a className="centre-details-return" href="/" onClick={(event) => {
+              event.preventDefault();
+              const returnPath = window.history.state?.centreDetails ? window.history.state.returnPath : null;
+              window.history.replaceState({}, '', returnPath || '/');
+              setSelectedCentre(null);
+              if (!returnPath) openPage('Preschool directory');
+            }}>‹ Browse centres</a>
+            {detailError === 'Centre not found' ? (
+              <section className="centre-details-error" role="alert">
+                <h1 ref={centreHeadingRef} tabIndex="-1">Centre not found</h1>
+                <p>{detailError}</p>
+              </section>
+            ) : detailError === 'Please sign in to view centre details.' ? (
+              <section className="centre-details-error" role="status">
+                <h1 ref={centreHeadingRef} tabIndex="-1">Sign in to view this centre</h1>
+                <p>Sign in to browse centre details outside the guest preview.</p>
+                <button className="primary-btn" type="button" onClick={() => setAuthMode('login')}>Sign in</button>
+              </section>
             ) : (
               <>
-                <h1>{selectedCentre.name}</h1>
-                <p>
-                  {selectedCentre.address || 'Address not provided'}{' '}
-                  {selectedCentre.postal ? `(${selectedCentre.postal})` : ''}
-                </p>
-                <CentreCommute
-                  centre={selectedCentre}
-                  currentUser={currentUser}
-                  profileId={profileId}
-                  profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
-                  onSignIn={() => setAuthMode('login')}
-                  onEditProfile={() => {
-                    setSelectedCentre(null);
-                    openPage('Family profile');
-                  }}
-                />
-                <p><b>Centre code:</b> {selectedCentre.centre_code || 'Not provided'}</p>
-                <p><b>Contact:</b> {selectedCentre.contact || 'Not provided'}</p>
-                <p><b>Email:</b> {selectedCentre.email || 'Not provided'}</p>
-                {selectedCentre.website_url && (
-                  <p>
-                    <a href={websiteHref(selectedCentre.website_url)} target="_blank" rel="noreferrer">
-                      Visit website
-                    </a>
-                  </p>
-                )}
-                <p><b>Weekday hours:</b> {selectedCentre.weekday_full_day_hours || 'Not provided'}</p>
-                <p><b>Saturday hours:</b> {selectedCentre.saturday_hours || 'Not provided'}</p>
-                <p><b>Food offered:</b> {selectedCentre.food_offered || 'Not provided'}</p>
-                <p><b>Second languages:</b> {selectedCentre.second_languages || 'Not provided'}</p>
-                <p><b>SPARK certified:</b> {selectedCentre.spark_certified ? 'Yes' : 'No'}</p>
-                <p><b>Government subsidy:</b> {selectedCentre.gov_subsidy ? 'Yes' : 'No'}</p>
-                <p><b>Transport:</b> {selectedCentre.transport_provided ? 'Available' : 'Not listed'}</p>
+                {detailError && <div className="centre-details-error" role="alert">
+                  <b>Centre details unavailable.</b> {detailError}
+                  <button className="secondary-btn" onClick={() => loadCentreDetails(selectedCentre)}>Try again</button>
+                </div>}
+                {detailLoading && <p className="centre-details-loading" role="status">Loading centre information…</p>}
+                <header className="centre-details-heading">
+                  <h1 ref={centreHeadingRef} tabIndex="-1">{selectedCentre.name}</h1>
+                  <p>{selectedCentre.address || 'Address not provided'} {selectedCentre.postal ? `(${selectedCentre.postal})` : ''}</p>
+                  <div className="centre-details-rating">★ <strong>{selectedCentre.review_summary?.average_rating != null ? Number(selectedCentre.review_summary.average_rating).toFixed(1) : '—'}</strong><span>{selectedCentre.review_summary?.total_reviews ?? 0} reviews</span></div>
+                </header>
+                <div className="centre-details-grid">
+                  <section className="centre-details-primary">
+                    <a className="skip-centre-map" href="#centre-commute-summary" onClick={(event) => {
+                      event.preventDefault();
+                      const destination = document.getElementById('centre-commute-summary') || document.getElementById('centre-details-facts');
+                      destination?.scrollIntoView({ block: 'start' });
+                      destination?.focus();
+                    }}>Skip map</a>
+                    <div id="centre-details-commute">
+                      <CentreCommute
+                        centre={selectedCentre}
+                        currentUser={currentUser}
+                        profileId={profileId}
+                        profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
+                        onSignIn={() => setAuthMode('login')}
+                        onEditProfile={() => openPage('Family profile')}
+                      />
+                    </div>
+                  </section>
+                  <aside className="centre-details-facts" id="centre-details-facts" tabIndex="-1">
+                    <h2>Centre information</h2>
+                    {selectedCentre.contact && <p><b>Phone</b><a href={`tel:${selectedCentre.contact}`}>{selectedCentre.contact}</a></p>}
+                    {selectedCentre.email && <p><b>Email</b><a href={`mailto:${selectedCentre.email}`}>{selectedCentre.email}</a></p>}
+                    {selectedCentre.website_url && <p><b>Website</b><a href={websiteHref(selectedCentre.website_url)} target="_blank" rel="noreferrer">Visit website <ArrowUpRight size={14} /></a></p>}
+                    <p><b>Centre code</b>{selectedCentre.centre_code || 'Not provided'}</p>
+                    <p><b>Weekday hours</b>{selectedCentre.weekday_full_day_hours || 'Not provided'}</p>
+                    <p><b>Saturday hours</b>{selectedCentre.saturday_hours || 'Not provided'}</p>
+                    <p><b>Food offered</b>{selectedCentre.food_offered || 'Not provided'}</p>
+                    <p><b>Second languages</b>{selectedCentre.second_languages || 'Not provided'}</p>
+                    <p><b>SPARK certified</b>{selectedCentre.spark_certified ? 'Yes' : 'No'}</p>
+                    <p><b>Government subsidy</b>{selectedCentre.gov_subsidy ? 'Yes' : 'No'}</p>
+                    <p><b>Transport</b>{selectedCentre.transport_provided ? 'Available' : 'Not listed'}</p>
+                  </aside>
+                </div>
                 <section className="parent-reviews" aria-labelledby="parent-reviews-title">
                   <div className="parent-reviews-heading">
                     <div>
@@ -2684,7 +2776,25 @@ function App() {
                     </div>
                   </div>
 
-                  {detailReviews.length ? (
+                  {detailReviewsLoading ? (
+                    <p role="status">Loading published reviews…</p>
+                  ) : detailReviewsError ? (
+                    <div className="reviews-empty-state" role="alert">
+                      <b>{detailReviewsError}</b>
+                      <button className="secondary-btn" type="button" onClick={() => {
+                        const requestGeneration = detailRequestRef.current;
+                        setDetailReviewsLoading(true);
+                        setDetailReviewsError('');
+                        getCentreReviews(selectedCentre.id).then((data) => {
+                          if (requestGeneration === detailRequestRef.current) setDetailReviews(data?.items || []);
+                        }).catch(() => {
+                          if (requestGeneration === detailRequestRef.current) setDetailReviewsError('Published reviews could not be loaded.');
+                        }).finally(() => {
+                          if (requestGeneration === detailRequestRef.current) setDetailReviewsLoading(false);
+                        });
+                      }}>Retry reviews</button>
+                    </div>
+                  ) : detailReviews.length ? (
                     <div className="parent-review-list">
                       {detailReviews.map((review) => (
                         <article className="parent-review-card" key={review.review_id}>
@@ -2727,7 +2837,12 @@ function App() {
                       <MessageCircleIcon />
                     </div>
                     {currentUser ? (
-                      <form className="parent-review-form" onSubmit={handleReviewSubmit}>
+                      myReviewLoading ? <p role="status">Loading your review…</p> : myReviewError ? (
+                        <div role="alert" className="reviews-empty-state">
+                          <p>{myReviewError}</p>
+                          <button className="secondary-btn" type="button" onClick={() => loadCentreDetails(selectedCentre)}>Retry your review</button>
+                        </div>
+                      ) : <form className="parent-review-form" onSubmit={handleReviewSubmit}>
                         <label>How would you rate this preschool?</label>
                         <div className="rating-picker" role="radiogroup" aria-label="Choose a rating from one to five stars">
                           {[1, 2, 3, 4, 5].map((star) => (
@@ -2769,11 +2884,8 @@ function App() {
                 </section>
               </>
             )}
-            <button className="secondary-btn" onClick={() => setSelectedCentre(null)}>
-              Close
-            </button>
-          </section>
-        </div>
+          </div>
+        </main>
       )}
 
       {toast && (
