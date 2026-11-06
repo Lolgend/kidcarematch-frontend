@@ -76,6 +76,7 @@ describe('createOnboardingController', () => {
       profileName: 'My family profile',
       draft: null,
       error: null,
+      errorStage: null,
       isFirstSave: false,
     });
 
@@ -103,6 +104,7 @@ describe('createOnboardingController', () => {
       profileName: 'My family profile',
       draft: null,
       error: null,
+      errorStage: null,
       isFirstSave: false,
     });
   });
@@ -162,6 +164,7 @@ describe('createOnboardingController', () => {
       profileName: 'My family profile',
       draft: null,
       error: null,
+      errorStage: null,
       isFirstSave: false,
     });
   });
@@ -180,6 +183,7 @@ describe('createOnboardingController', () => {
       profileName: 'My family profile',
       draft: null,
       error: null,
+      errorStage: null,
       isFirstSave: false,
     });
   });
@@ -229,6 +233,46 @@ describe('createOnboardingController', () => {
     expect(last.status).toBe('error');
     expect(last.profile).toBeNull();
     expect(last.error).toBe('503 Service Unavailable');
+    expect(last.errorStage).toBe('load');
+  });
+
+  it('does not allow a retained local draft to create a profile until the server load succeeds', async () => {
+    loadDraft.mockReturnValueOnce(validForm);
+    loadProfiles.mockRejectedValueOnce(new Error('503 unavailable'));
+    const controller = createController();
+    await controller.start({ uid: 'u-1', emailVerified: true });
+
+    await controller.save(validForm);
+
+    expect(createProfile).not.toHaveBeenCalled();
+    expect(updateProfile).not.toHaveBeenCalled();
+    expect(controller.getState().errorStage).toBe('load');
+  });
+
+  it('ignores a second save callback while the first profile save is pending', async () => {
+    loadProfiles.mockResolvedValueOnce([]);
+    let resolveSave;
+    createProfile.mockImplementationOnce(() => new Promise((resolve) => { resolveSave = resolve; }));
+    const controller = createController();
+    await controller.start({ uid: 'u-1', emailVerified: true });
+
+    const firstSave = controller.save(validForm);
+    await controller.save(validForm);
+    expect(createProfile).toHaveBeenCalledTimes(1);
+    resolveSave(validApiProfile);
+    await firstSave;
+  });
+
+  it('does not reload a required profile over an edited local form after duplicate auth callbacks', async () => {
+    loadProfiles.mockResolvedValue([]);
+    const controller = createController();
+    const user = { uid: 'u-1', emailVerified: true };
+    await controller.start(user);
+    const editedForm = { ...validForm, home: '123' };
+    await controller.save(editedForm);
+    await controller.start(user);
+    expect(loadProfiles).toHaveBeenCalledTimes(1);
+    expect(controller.getState().draft).toEqual(editedForm);
   });
 
   it('complete local draft alone still transitions to required and never emits ready', async () => {
@@ -261,6 +305,7 @@ describe('createOnboardingController', () => {
     expect(last.status).toBe('required');
     expect(last.draft).toEqual(invalidForm);
     expect(last.error).toBe('Enter your 6-digit home postal code.');
+    expect(last.errorStage).toBeNull();
   });
 
   it('rejected save retains form and transitions to error without emitting ready', async () => {
@@ -441,6 +486,7 @@ describe('createOnboardingController', () => {
       profileName: 'My family profile',
       draft: null,
       error: 'Account service down',
+      errorStage: 'load',
       isFirstSave: false,
     });
     expect(loadProfiles).not.toHaveBeenCalled();

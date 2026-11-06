@@ -4,6 +4,7 @@ import "leaflet/dist/leaflet.css";
 import CentreLocationMap from "./CentreLocationMap.jsx";
 import { useCommuteSession } from "./commuteSession.js";
 import { getCentreCommute as defaultGetCentreCommute, getCentreLocation as defaultGetCentreLocation } from "../api";
+import MapViewportController from "./MapViewportController.jsx";
 
 export function formatDuration(secs) {
   if (typeof secs !== "number") return "";
@@ -149,23 +150,26 @@ export function CentreCommuteView({
     : null;
 
   // Determine center coordinates for MapContainer
-  const centreCoord = data?.anchors?.centre || null;
-  const homeCoord = data?.anchors?.home || null;
-  const centerLat = centreCoord?.lat || homeCoord?.lat || 1.3521;
-  const centerLng = centreCoord?.lng || homeCoord?.lng || 103.8198;
-
   const availableLegsWithGeometry = legs.filter(
     (l) => l.status === "available" && Array.isArray(l.geometry) && l.geometry.length > 0
   );
+  const hasCentreCoordinate = Number.isFinite(data?.anchors?.centre?.lat) && Number.isFinite(data?.anchors?.centre?.lng);
+  const mapCoordinates = hasCentreCoordinate ? [
+    ...[data?.anchors?.home, data?.anchors?.centre, data?.anchors?.workplace]
+      .filter((point) => point && Number.isFinite(point.lat) && Number.isFinite(point.lng))
+      .map((point) => [point.lat, point.lng]),
+    ...availableLegsWithGeometry.flatMap((leg) => leg.geometry
+      .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng))
+      .map((point) => [point.lat, point.lng])),
+  ] : [];
 
   return (
     <section className="centre-map-section" aria-label="Centre commute comparison">
       {/* Travel mode selector */}
-      <div className="commute-mode-selector" role="radiogroup" aria-label="Travel mode">
+      <div className="commute-mode-selector" role="group" aria-label="Travel mode">
         <button
           type="button"
-          role="radio"
-          aria-checked={mode === "drive"}
+          aria-pressed={mode === "drive"}
           className={`commute-mode-btn ${mode === "drive" ? "active" : ""}`}
           onClick={() => onModeChange && onModeChange("drive")}
         >
@@ -173,8 +177,7 @@ export function CentreCommuteView({
         </button>
         <button
           type="button"
-          role="radio"
-          aria-checked={mode === "pt"}
+          aria-pressed={mode === "pt"}
           className={`commute-mode-btn ${mode === "pt" ? "active" : ""}`}
           onClick={() => onModeChange && onModeChange("pt")}
         >
@@ -182,8 +185,7 @@ export function CentreCommuteView({
         </button>
         <button
           type="button"
-          role="radio"
-          aria-checked={mode === "walk"}
+          aria-pressed={mode === "walk"}
           className={`commute-mode-btn ${mode === "walk" ? "active" : ""}`}
           onClick={() => onModeChange && onModeChange("walk")}
         >
@@ -191,8 +193,7 @@ export function CentreCommuteView({
         </button>
         <button
           type="button"
-          role="radio"
-          aria-checked={mode === "cycle"}
+          aria-pressed={mode === "cycle"}
           className={`commute-mode-btn ${mode === "cycle" ? "active" : ""}`}
           onClick={() => onModeChange && onModeChange("cycle")}
         >
@@ -201,18 +202,20 @@ export function CentreCommuteView({
       </div>
 
       {loading && (
-        <div className="centre-map-loading" role="status">
-          Loading commute route…
-        </div>
+        <>
+          <CentreLocationMap centre={centre} currentUser={currentUser} getCentreLocation={getCentreLocation} />
+          <div className="centre-map-loading" role="status">Loading commute route…</div>
+        </>
       )}
 
       {error && !loading && (
-        <div className="centre-map-unavailable" role="status">
-          <p>Could not load commute route. ({error.message || "Network error"})</p>
-          <button type="button" className="retry-route-btn" onClick={onRetry || undefined}>
-            Retry route
-          </button>
-        </div>
+        <>
+          <CentreLocationMap centre={centre} currentUser={currentUser} getCentreLocation={getCentreLocation} />
+          <div className="centre-map-unavailable" role="status">
+            <p>Could not load commute route. ({error.message || "Network error"})</p>
+            <button type="button" className="retry-route-btn" onClick={onRetry || undefined}>Retry route</button>
+          </div>
+        </>
       )}
 
       {!loading && !error && data && (
@@ -233,12 +236,10 @@ export function CentreCommuteView({
           {/* Representative Weekday / Weekend summary selector tabs */}
           {isDateDependent ? (
             <div className="commute-sample-controls" aria-label="Representative travel conditions">
-              <div className="commute-sample-selector" role="tablist" aria-label="Representative travel day">
+              <div className="commute-sample-selector" role="group" aria-label="Representative travel day">
                 <button
                   type="button"
-                  role="tab"
-                  id="tab-weekday"
-                  aria-selected={currentSampleKind === "weekday"}
+                  aria-pressed={currentSampleKind === "weekday"}
                   className={`commute-sample-tab ${currentSampleKind === "weekday" ? "active" : ""}`}
                   onClick={() => onSelectSample && onSelectSample("weekday")}
                 >
@@ -254,9 +255,7 @@ export function CentreCommuteView({
                 </button>
                 <button
                   type="button"
-                  role="tab"
-                  id="tab-weekend"
-                  aria-selected={currentSampleKind === "weekend"}
+                  aria-pressed={currentSampleKind === "weekend"}
                   className={`commute-sample-tab ${currentSampleKind === "weekend" ? "active" : ""}`}
                   onClick={() => onSelectSample && onSelectSample("weekend")}
                 >
@@ -289,13 +288,14 @@ export function CentreCommuteView({
           )}
 
           {/* Map display */}
-          <div className="centre-map-wrapper" data-testid="centre-commute-map">
+          {mapCoordinates.length > 0 ? <div className="centre-map-wrapper" data-testid="centre-commute-map">
             <MapContainer
-              center={[centerLat, centerLng]}
+              center={mapCoordinates[0]}
               zoom={13}
               scrollWheelZoom={false}
               style={{ height: "100%", width: "100%" }}
             >
+              <MapViewportController coordinates={mapCoordinates} />
               <TileLayer
                 attribution='&copy; <a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener noreferrer">OneMap</a> &copy; Singapore Land Authority'
                 url="https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png"
@@ -303,21 +303,21 @@ export function CentreCommuteView({
                 minZoom={11}
               />
               {data.anchors?.home && (
-                <Marker position={[data.anchors.home.lat, data.anchors.home.lng]}>
+                <Marker position={[data.anchors.home.lat, data.anchors.home.lng]} alt="Home" title="Home">
                   <Popup>
                     <strong>Home</strong>
                   </Popup>
                 </Marker>
               )}
               {data.anchors?.centre && (
-                <Marker position={[data.anchors.centre.lat, data.anchors.centre.lng]}>
+                <Marker position={[data.anchors.centre.lat, data.anchors.centre.lng]} alt="Centre" title="Centre">
                   <Popup>
-                    <strong>{centreName || "Preschool Centre"}</strong>
+                    <strong>Centre</strong>{centreName ? `: ${centreName}` : ""}
                   </Popup>
                 </Marker>
               )}
               {data.anchors?.workplace && (
-                <Marker position={[data.anchors.workplace.lat, data.anchors.workplace.lng]}>
+                <Marker position={[data.anchors.workplace.lat, data.anchors.workplace.lng]} alt="Workplace" title="Workplace">
                   <Popup>
                     <strong>Workplace</strong>
                   </Popup>
@@ -335,7 +335,7 @@ export function CentreCommuteView({
                 />
               ))}
             </MapContainer>
-          </div>
+          </div> : <div className="centre-map-unavailable" role="status">Map view is currently unavailable for this centre.</div>}
 
           {/* Readable text breakdown */}
           <div className="commute-breakdown" aria-label="Journey breakdown">
@@ -425,6 +425,7 @@ export default function CentreCommute({
   centreName = centre?.name || centre?.centre_name,
   currentUser = null,
   profileId = null,
+  profileLocationKey = null,
   userId = currentUser?.uid || currentUser?.user_id || currentUser?.id || currentUser?.email || null,
   onSignIn = null,
   onEditProfile = null,
@@ -435,6 +436,7 @@ export default function CentreCommute({
   const session = useCommuteSession({
     centreId: currentUser && profileId ? centreId : null,
     profileId: currentUser && profileId ? profileId : null,
+    locationKey: currentUser && profileId ? profileLocationKey : null,
     userId: effectiveUserId,
     loadCommute,
   });

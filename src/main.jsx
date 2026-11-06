@@ -567,6 +567,11 @@ function App() {
         setPage('Find my matches');
         notify('Family profile completed! Here are your matches.');
       }
+    } else if (onboardingState.status === 'loading') {
+      setProfile(null);
+      setProfileId(null);
+      setProfileName('My family profile');
+      setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
     } else if (onboardingState.status === 'required') {
       setProfile(null);
       setProfileId(onboardingState.profileId);
@@ -578,6 +583,8 @@ function App() {
           enrolMonth: onboardingState.draft.enrolMonth || nextMonthValue(),
           weights: normalizeWeights(onboardingState.draft.weights),
         });
+      } else {
+        setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
       }
     } else if (onboardingState.status === 'guest') {
       setProfile(null);
@@ -1342,7 +1349,13 @@ function App() {
       notify('Please sign in to save your profile.');
       return;
     }
-    await controller.save(profileForm);
+    if (controller.getState().status === 'saving') return;
+    setProfileSaving(true);
+    try {
+      await controller.save(profileForm);
+    } finally {
+      setProfileSaving(false);
+    }
   };
 
   // Matches run automatically from the saved profile.
@@ -1671,7 +1684,7 @@ function App() {
                 </div>
               )}
 
-              {onboardingState.status === 'error' && !onboardingState.draft && (
+              {onboardingState.status === 'error' && onboardingState.errorStage === 'load' && (
                 <div className="panel onboarding-panel error-panel">
                   <div className="eyebrow"><CircleHelp size={16} /> COULD NOT LOAD PROFILE</div>
                   <h2>Unable to load family profile</h2>
@@ -1687,7 +1700,7 @@ function App() {
                 </div>
               )}
 
-              {(onboardingState.status === 'required' || onboardingState.status === 'saving' || (onboardingState.status === 'error' && onboardingState.draft)) && (
+              {(onboardingState.status === 'required' || onboardingState.status === 'saving' || (onboardingState.status === 'error' && onboardingState.errorStage === 'save')) && (
                 <>
                   <PageTitle
                     eyebrow="REQUIRED FAMILY PROFILE SETUP"
@@ -2548,8 +2561,8 @@ function App() {
                   <span className="fine-print">
                     Saved to your account and used by Find my matches. Travel is scored from postal codes, not commute time.
                   </span>
-                  <button type="submit" className="primary-btn" disabled={profileSaving}>
-                    {profileSaving ? 'Saving…' : 'Save profile'} <Check size={16} />
+                  <button type="submit" className="primary-btn" disabled={profileSaving || onboardingState.status === 'saving'}>
+                    {profileSaving || onboardingState.status === 'saving' ? 'Saving…' : 'Save profile'} <Check size={16} />
                   </button>
                 </div>
               </form>
@@ -2628,6 +2641,7 @@ function App() {
                   centre={selectedCentre}
                   currentUser={currentUser}
                   profileId={profileId}
+                  profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
                   onSignIn={() => setAuthMode('login')}
                   onEditProfile={() => {
                     setSelectedCentre(null);

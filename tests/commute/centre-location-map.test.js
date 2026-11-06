@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-leaflet", () => ({
+  useMap: () => ({ invalidateSize: vi.fn(), setView: vi.fn(), fitBounds: vi.fn(), getContainer: () => ({}) }),
   MapContainer: ({ children, center, zoom, style }) =>
     React.createElement(
       "div",
