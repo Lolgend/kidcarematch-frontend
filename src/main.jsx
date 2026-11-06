@@ -449,6 +449,7 @@ function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const detailRequestRef = useRef(0);
+  const activeAccountIdRef = useRef(null);
   const [detailReviews, setDetailReviews] = useState([]);
   const [detailReviewsLoading, setDetailReviewsLoading] = useState(false);
   const [detailReviewsError, setDetailReviewsError] = useState('');
@@ -656,6 +657,24 @@ function App() {
         "Firebase authentication state:",
         user ? user.email : "No user signed in"
       );
+
+      const nextAccountId = user?.uid == null ? null : String(user.uid);
+      const accountChanged = activeAccountIdRef.current !== nextAccountId;
+      activeAccountIdRef.current = nextAccountId;
+      if (accountChanged) {
+        detailRequestRef.current += 1;
+        setSelectedCentre(null);
+        setDetailLoading(false);
+        setDetailError('');
+        setDetailReviews([]);
+        setDetailReviewsLoading(false);
+        setDetailReviewsError('');
+        setMyCentreReview(null);
+        setMyReviewLoading(false);
+        setMyReviewError('');
+        setReviewRating(5);
+        setReviewComment('');
+      }
 
       setCurrentUser(user);
       setAuthResolved(true);
