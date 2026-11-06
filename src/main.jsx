@@ -24,6 +24,7 @@ import CentreCommute from './commute/CentreCommute';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
 import { centreDetailsPath, centreIdFromPath } from './centreDetailsRoute';
+import { claimCentreReturnTab, clearCentreReturnContext, hasCentreReturnAccount, loadCentreReturnContext, saveCentreReturnContext } from './centreReturnContext';
 import {
   getCentres,
   getCentreById,
@@ -369,6 +370,46 @@ function markLocalAlertsRead(uid, id = null) {
   saveAlertStore(uid, store);
 }
 
+const CENTRE_ORIGIN_PAGES = new Set([
+  'Overview', 'Preschool directory', 'Find my matches', 'My watchlist', 'Compare centres', 'Family profile',
+]);
+
+function permittedCentreOriginPage(context, currentUser, onboardingState, profile) {
+  if (!CENTRE_ORIGIN_PAGES.has(context?.page)) return null;
+  if (context.page === 'Overview') return 'Overview';
+  if (!currentUser) return null;
+  const ready = ['ready', 'admin'].includes(onboardingState.status) ||
+    currentUser.email?.toLowerCase() === 'swetalakshita@gmail.com';
+  if (!ready) return null;
+  if (context.page === 'Find my matches' && !profile) return null;
+  return context.page;
+}
+
+function focusCentreOriginControl(origin) {
+  let attempts = 0;
+  const focus = () => {
+    const control = origin.focusCentreId
+      ? document.querySelector(`[data-centre-id="${CSS.escape(String(origin.focusCentreId))}"]`)
+      : null;
+    if (control && !control.disabled) {
+      control.focus();
+      if (document.activeElement === control) return;
+    }
+    if (attempts++ < 20) window.setTimeout(focus, 50);
+  };
+  focus();
+}
+
+function matchControlsFromOrigin(origin) {
+  const budget = Number(origin?.matchControls?.budget);
+  const weights = origin?.matchControls?.weights;
+  const validWeights = weights && ['vacancy', 'cost', 'travel'].every((key) => [15, 35, 50].includes(Number(weights[key]))) &&
+    Number(weights.vacancy) + Number(weights.cost) + Number(weights.travel) === 100 &&
+    new Set(['vacancy', 'cost', 'travel'].map((key) => Number(weights[key]))).size === 3;
+  if (!Number.isFinite(budget) || budget < 1 || budget > 1000000 || !validWeights) return null;
+  return { budget, weights: { vacancy: Number(weights.vacancy), cost: Number(weights.cost), travel: Number(weights.travel) } };
+}
+
 // Dropdown list of vacancy alerts for watchlisted centres.
 function NotificationPanel({ items, unread, error, onOpen, onReadAll }) {
   return (
@@ -442,6 +483,8 @@ function App() {
   const [centresLoading, setCentresLoading] = useState(true);
   const [centresError, setCentresError] = useState('');
   const [centreSummary, setCentreSummary] = useState(null);
+  const [selectedCentre, setSelectedCentre] = useState(null);
+
   const [watchlistEntries, setWatchlistEntries] = useState([]);
   // Saved centres that aren't in the currently loaded list are fetched by id and cached here.
   const [fetchedCentres, setFetchedCentres] = useState({});
@@ -464,17 +507,16 @@ function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [authResolved, setAuthResolved] = useState(false);
   const [page, setPage] = useState('Overview');
+  const centreReturnRestoredRef = useRef(false);
+  const centreReturnOriginRef = useRef(null);
+  const pendingCentreOriginRestoreRef = useRef(null);
+  const activeIdentityRef = useRef(undefined);
+  const [returnContextReady, setReturnContextReady] = useState(false);
 
   // Hooks must live inside the component (this was at module level before).
   const [compareSelectedIds, setCompareSelectedIds] = useState([]);
 
-  const [saved, setSaved] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('kidcare-watchlist') || '[]');
-    } catch {
-      return [];
-    }
-  });
+  const [saved, setSaved] = useState([]);
 
   const [query, setQuery] = useState('');
   const [notifications, setNotifications] = useState({ items: [], unread_count: 0 });
@@ -490,13 +532,45 @@ function App() {
   const [selectedDistricts, setSelectedDistricts] = useState([]); // e.g. ['D01', 'D09']
   // The API can only filter by "has an open vacancy for this level", so that is the filter we offer.
   const [level, setLevel] = useState('');
+
+  useEffect(() => {
+    const claim = claimCentreReturnTab();
+    claim.ready.then((ready) => setReturnContextReady(ready));
+    return () => claim.dispose();
+  }, []);
+
+  useEffect(() => {
+    if (!authResolved || !currentUser) return;
+    if (hasCentreReturnAccount(currentUser.uid)) return;
+    // A sign-out or account switch must not leave another viewer's return state in this tab.
+    centreReturnOriginRef.current = null;
+    clearCentreReturnContext();
+  }, [authResolved, currentUser?.uid]);
+
   const [compareDetails, setCompareDetails] = useState({});
   const [budget, setBudget] = useState(750);
   const [matchForm, setMatchForm] = useState({ level: 'n1', citizenship: 'SC', home: '', work: '' });
   const [matchRun, setMatchRun] = useState(null); // the inputs the current results were fetched for
+  const [restoredMatchSnapshot, setRestoredMatchSnapshot] = useState(null);
+  const matchRestoreGenerationRef = useRef(0);
   const [matchCandidates, setMatchCandidates] = useState([]);
   const [matchStatus, setMatchStatus] = useState('idle'); // idle | loading | done | error
   const [matchMessage, setMatchMessage] = useState('');
+  useEffect(() => {
+    if (selectedCentre || centresLoading) return;
+    const origin = pendingCentreOriginRestoreRef.current;
+    if (!origin) return;
+    if (origin.page === 'Find my matches' && matchStatus === 'loading') return;
+    const control = origin.focusCentreId
+      ? document.querySelector(`[data-centre-id="${CSS.escape(String(origin.focusCentreId))}"]`)
+      : null;
+    if (origin.focusCentreId && !control) return;
+    pendingCentreOriginRestoreRef.current = null;
+    window.setTimeout(() => {
+      window.scrollTo(0, Math.max(0, Number(origin.scrollY) || 0));
+      focusCentreOriginControl(origin);
+    }, 50);
+  }, [centresLoading, matchCandidates, matchStatus, page, selectedCentre]);
   const matchDetailCache = useRef(new Map());
   const [weights, setWeights] = useState({ vacancy: 50, cost: 35, travel: 15 });
   const [scoreInfoOpen, setScoreInfoOpen] = useState(false);
@@ -521,10 +595,21 @@ function App() {
     setMatchForm({ level: p.level, citizenship: p.citizenship, home: p.home, work: p.work || '' });
     setBudget(Number(p.budget));
     setWeights(p.weights);
+    setRestoredMatchSnapshot(null);
     setMatchRun(null);
     setMatchCandidates([]);
     setMatchStatus('idle');
     setMatchMessage('');
+  };
+
+  const restoreMatchingOrigin = (origin) => {
+    const controls = matchControlsFromOrigin(origin);
+    if (controls) {
+      setBudget(controls.budget);
+      setWeights(controls.weights);
+    }
+    setRestoredMatchSnapshot(origin.matchSnapshot);
+    setMatchStatus('loading');
   };
 
   const [onboardingState, setOnboardingState] = useState(() => ({
@@ -536,6 +621,33 @@ function App() {
     error: null,
     isFirstSave: false,
   }));
+
+  useEffect(() => {
+    if (!authResolved || !returnContextReady || centreReturnRestoredRef.current) return;
+    if (currentUser && onboardingState.status === 'loading') return;
+    const context = loadCentreReturnContext(currentUser?.uid || null, window.history.state?.centreOriginId);
+    if (!context) {
+      centreReturnRestoredRef.current = true;
+      return;
+    }
+    centreReturnOriginRef.current = context;
+    const restoredPage = permittedCentreOriginPage(context, currentUser, onboardingState, profile);
+    setPage(restoredPage || 'Overview');
+    if (!restoredPage) {
+      centreReturnRestoredRef.current = true;
+      return;
+    }
+    setQuery(context.query || '');
+    setSelectedDistricts(Array.isArray(context.districts) ? context.districts : []);
+    setLevel(context.level || '');
+    setPageOffset(Number(context.pageOffset) || 0);
+    setCompareSelectedIds(Array.isArray(context.compareSelectedIds) ? context.compareSelectedIds : []);
+    if (restoredPage === 'Find my matches' && Array.isArray(context.matchSnapshot)) {
+      restoreMatchingOrigin(context);
+    }
+    centreReturnRestoredRef.current = true;
+    window.requestAnimationFrame(() => window.scrollTo(0, Math.max(0, Number(context.scrollY) || 0)));
+  }, [authResolved, currentUser?.uid, onboardingState.status, profile, returnContextReady]);
 
   const controller = useMemo(() => {
     return createOnboardingController({
@@ -603,7 +715,6 @@ function App() {
     }
   }, [onboardingState]);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [selectedCentre, setSelectedCentre] = useState(null);
   const centreHeadingRef = useRef(null);
   const [authMode, setAuthMode] = useState('login');
   const [adminTab, setAdminTab] = useState('Users');
@@ -658,12 +769,38 @@ function App() {
         user ? user.email : "No user signed in"
       );
 
+      const nextIdentity = user?.uid || null;
+      const previousIdentity = activeIdentityRef.current;
+      if (previousIdentity !== nextIdentity) {
+        activeIdentityRef.current = nextIdentity;
+        setSaved([]);
+        setCompareSelectedIds([]);
+        setMatchRun(null);
+        setMatchCandidates([]);
+        setRestoredMatchSnapshot(null);
+        matchRestoreGenerationRef.current += 1;
+        setMatchStatus('idle');
+        setMatchMessage('');
+        setQuery('');
+        setSelectedDistricts([]);
+        setLevel('');
+        setPageOffset(0);
+        if (previousIdentity !== undefined) {
+          clearCentreReturnContext();
+          centreReturnOriginRef.current = null;
+          setSelectedCentre(null);
+          setWatchlistEntries([]);
+          setPage('Overview');
+          resetSessionMode();
+        }
+        try { localStorage.removeItem('kidcare-watchlist'); } catch { /* storage may be disabled */ }
+      }
+
       const nextAccountId = user?.uid == null ? null : String(user.uid);
       const accountChanged = activeAccountIdRef.current !== nextAccountId;
       activeAccountIdRef.current = nextAccountId;
       if (accountChanged) {
         detailRequestRef.current += 1;
-        setSelectedCentre(null);
         setDetailLoading(false);
         setDetailError('');
         setDetailReviews([]);
@@ -869,7 +1006,40 @@ function App() {
     const requestGeneration = ++detailRequestRef.current;
     const path = centreDetailsPath(centre.id);
     if (pushHistory && path && window.location.pathname !== path) {
-      window.history.pushState({ ...(window.history.state || {}), centreDetails: true, returnPath: `${window.location.pathname}${window.location.search}` }, '', path);
+      const historyOriginId = window.history.state?.centreOriginId;
+      let origin = window.location.pathname.startsWith('/centres/') && historyOriginId
+        ? (loadCentreReturnContext(currentUser?.uid || null, historyOriginId) || centreReturnOriginRef.current)
+        : null;
+      let originId = origin?.id || null;
+      if (!origin && !window.location.pathname.startsWith('/centres/')) {
+        origin = {
+          version: 1,
+          uid: currentUser?.uid || null,
+          returnPath: window.location.pathname,
+          page,
+          query: [profile?.home, profile?.work].filter(Boolean).some((value) => query.includes(String(value))) ? '' : query,
+          districts: selectedDistricts,
+          level,
+          pageOffset,
+          compareSelectedIds,
+          matchSnapshot: page === 'Find my matches' ? ranked.map(({ id, score, fee, vf, cf, tf, vacancyLabel, locationLabel }) => ({ id: String(id), score, fee, vf, cf, tf, vacancyLabel, locationLabel })) : null,
+          matchControls: page === 'Find my matches' ? { budget: Number(budget), weights: { ...weights } } : null,
+          scrollY: window.scrollY,
+          focusCentreId: String(centre.id),
+        };
+      } else if (origin) {
+        origin = { ...origin, focusCentreId: String(centre.id) };
+      }
+      originId = origin ? (saveCentreReturnContext(origin) || origin.id || null) : null;
+      origin = origin ? { ...origin, id: originId } : null;
+      centreReturnOriginRef.current = origin;
+      const returnPath = origin?.uid === (currentUser?.uid || null)
+        ? origin.returnPath
+        : '/';
+      if (originId && window.location.pathname !== path) {
+        window.history.replaceState({ ...(window.history.state || {}), centreOriginId: originId }, '', window.location.href);
+      }
+      window.history.pushState({ ...(window.history.state || {}), centreDetails: true, returnPath, centreOriginId: originId }, '', path);
     }
     setSelectedCentre(centre);
     setDetailLoading(true);
@@ -929,7 +1099,25 @@ function App() {
       const centreId = centreIdFromPath(window.location.pathname);
       if (!authResolved || centresLoading) return;
       if (!centreId) {
+        const origin = returnContextReady
+          ? loadCentreReturnContext(currentUser?.uid || null, window.history.state?.centreOriginId)
+          : null;
+        if (origin) pendingCentreOriginRestoreRef.current = origin;
         setSelectedCentre(null);
+        if (origin) {
+          centreReturnOriginRef.current = origin;
+          const restoredPage = permittedCentreOriginPage(origin, currentUser, onboardingState, profile);
+          setPage(restoredPage || 'Overview');
+          if (!restoredPage) return;
+          setQuery(origin.query || '');
+          setSelectedDistricts(Array.isArray(origin.districts) ? origin.districts : []);
+          setLevel(origin.level || '');
+          setPageOffset(Number(origin.pageOffset) || 0);
+          setCompareSelectedIds(Array.isArray(origin.compareSelectedIds) ? origin.compareSelectedIds : []);
+          if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
+            restoreMatchingOrigin(origin);
+          }
+        }
         return;
       }
       const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
@@ -1254,7 +1442,10 @@ function App() {
 };
   // Priorities can be tweaked right on the matches page; results re-rank instantly
   // and the change is saved back to the family profile.
-  const updateRank = (key, rank) => setWeights((current) => setRank(current, key, rank));
+  const updateRank = (key, rank) => {
+    setRestoredMatchSnapshot(null);
+    setWeights((current) => setRank(current, key, rank));
+  };
 
   useEffect(() => {
     if (!profile || !currentUser) return undefined;
@@ -1286,6 +1477,26 @@ function App() {
   // Rank the fetched candidates. Sliders re-rank instantly; no refetch is needed.
   const ranked = useMemo(() => {
     if (!matchRun) return [];
+    if (restoredMatchSnapshot?.length) {
+      const candidatesById = new Map(matchCandidates.map((candidate) => [String(candidate.centre.id), candidate]));
+      return restoredMatchSnapshot.map((result) => {
+        const candidate = candidatesById.get(String(result.id));
+        if (!candidate) return null;
+        return {
+          ...candidate.centre,
+          ...candidate.detail,
+          id: candidate.centre.id,
+          name: candidate.centre.name,
+          score: result.score,
+          fee: result.fee,
+          vf: result.vf,
+          cf: result.cf,
+          tf: result.tf,
+          vacancyLabel: result.vacancyLabel,
+          locationLabel: result.locationLabel,
+        };
+      }).filter(Boolean);
+    }
     const anchors = [matchRun.home, matchRun.work];
 
     return matchCandidates
@@ -1330,9 +1541,39 @@ function App() {
         (b.vf + b.cf + b.tf) - (a.vf + a.cf + a.tf) ||
         a.fee - b.fee
       );
-  }, [matchCandidates, matchRun, budget, weights]);
+  }, [matchCandidates, matchRun, budget, weights, restoredMatchSnapshot]);
+
+  useEffect(() => {
+    if (page !== 'Find my matches' || matchStatus !== 'loading' || !restoredMatchSnapshot?.length || !profile) return undefined;
+    const generation = ++matchRestoreGenerationRef.current;
+    const restoredRun = {
+      level: profile.level,
+      citizenship: profile.citizenship,
+      home: profile.home,
+      work: profile.work || '',
+      enrolMonth: profile.enrolMonth,
+    };
+    setMatchRun(restoredRun);
+    Promise.all(restoredMatchSnapshot.map(async (result) => {
+      const detail = await getCentreById(result.id);
+      const centre = mapCentre(detail);
+      return { centre: { ...centre, id: result.id }, detail };
+    })).then((candidates) => {
+      if (generation !== matchRestoreGenerationRef.current) return;
+      setMatchCandidates(candidates);
+      setMatchStatus('done');
+      setMatchMessage('Restored your previous match results.');
+    }).catch((error) => {
+      if (generation !== matchRestoreGenerationRef.current) return;
+      setMatchCandidates([]);
+      setMatchStatus('error');
+      setMatchMessage(error.message || 'Your previous match results could not be restored.');
+    });
+    return () => { matchRestoreGenerationRef.current += 1; };
+  }, [matchStatus, page, profile, restoredMatchSnapshot]);
 
   const runMatching = async () => {
+    setRestoredMatchSnapshot(null);
     const home = matchForm.home.trim();
     const work = matchForm.work.trim();
     if (!/^\d{6}$/.test(home)) {
@@ -1986,7 +2227,7 @@ function App() {
                     <article className="panel centre-card" key={centre.id}>
                       <h3>{centre.name}</h3>
                       <p>{centre.address || 'Address not provided'}</p>
-                      <button className="secondary-btn" onClick={() => openCentreDetails(centre)}>
+                      <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                         View details
                       </button>
                     </article>
@@ -2082,7 +2323,7 @@ function App() {
                         {centre.gov_subsidy && <span>Government subsidy</span>}
                         {centre.transport_provided && <span>Transport</span>}
                       </div>
-                      <button className="primary-btn full" onClick={() => openCentreDetails(centre)}>
+                      <button className="primary-btn full" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                         View details <ChevronRight size={16} />
                       </button>
                     </article>
@@ -2136,7 +2377,7 @@ function App() {
                         <div><dt>Citizenship (for fees)</dt><dd>{CITIZENSHIP_LABELS[profile.citizenship]}</dd></div>
                         <div><dt>Home postal code</dt><dd>{profile.home}</dd></div>
                         <div><dt>Workplace postal code</dt><dd>{profile.work || 'Not set'}</dd></div>
-                        <div><dt>Monthly budget</dt><dd>${profile.budget}</dd></div>
+                        <div><dt>Monthly budget</dt><dd>${budget}</dd></div>
                         <div><dt>Enrolment month</dt><dd>{profile.enrolMonth}</dd></div>
                       </dl>
 
@@ -2246,7 +2487,7 @@ function App() {
                         {centre.transport_provided && <span>Transport</span>}
                       </div>
 
-                      <button className="secondary-btn" onClick={() => openCentreDetails(centre)}>
+                      <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                         View details
                       </button>
                     </article>
@@ -2304,7 +2545,7 @@ function App() {
                             )
                         ))}
 
-                      <button className="secondary-btn" onClick={() => openCentreDetails(centre)}>
+                      <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                         View details
                       </button>
 
@@ -2509,7 +2750,7 @@ function App() {
                         )}
                         {entry.error && <p className="fine-print">Could not load full details: {entry.error}</p>}
 
-                        <button className="secondary-btn" onClick={() => openCentreDetails(centre)}>
+                        <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                           View full details
                         </button>
 
@@ -2714,10 +2955,33 @@ function App() {
           <div className="centre-details-inner">
             <a className="centre-details-return" href="/" onClick={(event) => {
               event.preventDefault();
-              const returnPath = window.history.state?.centreDetails ? window.history.state.returnPath : null;
-              window.history.replaceState({}, '', returnPath || '/');
+              const historyOriginId = window.history.state?.centreOriginId;
+              const candidateOrigin = returnContextReady && historyOriginId
+                ? (loadCentreReturnContext(currentUser?.uid || null, historyOriginId) ||
+                  (centreReturnOriginRef.current?.id === historyOriginId ? centreReturnOriginRef.current : null))
+                : null;
+              const origin = candidateOrigin?.uid === (currentUser?.uid || null) ? candidateOrigin : null;
+              const restoredPage = origin
+                ? permittedCentreOriginPage(origin, currentUser, onboardingState, profile)
+                : null;
+              const returnPath = origin?.returnPath || '/';
+              window.history.pushState({ centreReturn: true, ...(origin ? { centreOriginId: origin.id } : {}) }, '', returnPath);
+              if (origin && restoredPage && centreReturnRestoredRef.current) pendingCentreOriginRestoreRef.current = origin;
               setSelectedCentre(null);
-              if (!returnPath) openPage('Preschool directory');
+              if (origin && restoredPage && centreReturnRestoredRef.current) {
+                setPage(restoredPage);
+                setQuery(origin.query || '');
+                setSelectedDistricts(Array.isArray(origin.districts) ? origin.districts : []);
+                setLevel(origin.level || '');
+                setPageOffset(Number(origin.pageOffset) || 0);
+                setCompareSelectedIds(Array.isArray(origin.compareSelectedIds) ? origin.compareSelectedIds : []);
+                if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
+                  restoreMatchingOrigin(origin);
+                }
+              } else {
+                centreReturnOriginRef.current = null;
+                openPage('Preschool directory');
+              }
             }}>‹ Browse centres</a>
             {detailError === 'Centre not found' ? (
               <section className="centre-details-error" role="alert">
