@@ -47,7 +47,7 @@ export async function apiRequest(endpoint, options = {}) {
   if (!response.ok) {
     const detail =
       typeof body === "object"
-        ? body.detail || body.message
+        ? (body.detail?.code || body.detail?.message || body.detail || body.message)
         : body;
 
     throw new Error(
@@ -110,6 +110,30 @@ export const getCentreById = (id) =>
 export const getCentreByCode = (code) =>
   apiRequest(
     `/api/v1/centres/code/${encodeURIComponent(code)}`
+  );
+
+export const getCentreLocation = (centreId, options = {}) =>
+  apiRequest(
+    `/api/v1/centres/${encodeURIComponent(centreId)}/location`,
+    options
+  );
+
+export const getCentreCommute = (
+  centreId,
+  { profileId, mode = "drive", samplePair = null } = {},
+  options = {}
+) =>
+  apiRequest(
+    `/api/v1/centres/${encodeURIComponent(centreId)}/commute`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        profile_id: profileId,
+        mode,
+        ...(samplePair ? { sample_pair: samplePair } : {}),
+      }),
+      ...options,
+    }
   );
 
 // ==========================================

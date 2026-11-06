@@ -20,6 +20,9 @@ import {
 
 import { auth } from './firebase';
 import AdminDashboard from './admin/AdminDashboard';
+import CentreCommute from './commute/CentreCommute';
+import { resetSessionMode } from './commute/commuteSession';
+import CentreLocationMap from './commute/CentreLocationMap';
 import {
   getCentres,
   getCentreById,
@@ -43,6 +46,23 @@ import {
   createFamilyProfile,
   updateFamilyProfile
 } from './api';
+import {
+  PROFILE_DEFAULTS,
+  WEIGHT_KEYS,
+  WEIGHT_LABELS,
+  RANK_WEIGHTS,
+  priorityOrder,
+  weightsFromOrder,
+  normalizeWeights,
+  setRank,
+  weightsFromCostShare,
+  nextMonthValue,
+  validateFamilyProfile,
+  isProfileComplete,
+  toApiProfile,
+  fromApiProfile
+} from './profile/familyProfile';
+import { createOnboardingController } from './profile/onboarding';
 import './styles.css';
 
 function mapCentre(centre = {}) {
@@ -175,96 +195,7 @@ function locationFit(postal, anchors) {
   return { score: 0, label: 'Further away' };
 }
 
-// ---- Family profile: the single source of truth for matching ----
-const nextMonthValue = () => {
-  const d = new Date();
-  d.setMonth(d.getMonth() + 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-};
-const PROFILE_DEFAULTS = {
-  level: 'n1', citizenship: 'SC', service: 'Full Day', enrolMonth: '',
-  home: '', work: '', locationPref: 'HOME', income: '', members: '',
-  budget: 750, weights: { vacancy: 50, cost: 35, travel: 15 }
-};
 const profileKey = (uid) => `kidcare-profile:${uid}`;
-const isProfileComplete = (p) =>
-  Boolean(p && /^\d{6}$/.test(p.home || '') && p.level && p.citizenship && Number(p.budget) > 0);
-
-// Backend stores only cost/travel weights (summing to 1); vacancy weight is kept locally.
-function toApiProfile(p) {
-  const ct = p.weights.cost + p.weights.travel;
-  const cost = ct ? Math.round((p.weights.cost / ct) * 100) / 100 : 0.5;
-  return {
-    profile_name: 'My family profile',
-    level: p.level,
-    citizenship_status: p.citizenship,
-    service_required: p.service || 'Full Day',
-    home_postal_code: p.home,
-    workplace_postal_code: p.work || null,
-    location_preference: p.locationPref,
-    household_income: Number(p.income) || 0,
-    household_member_count: Math.max(1, Number(p.members) || 1),
-    budget_max: Number(p.budget),
-    enrollment_month_year: p.enrolMonth || nextMonthValue(),
-    cost_weight: cost,
-    travel_weight: Math.round((1 - cost) * 100) / 100
-  };
-}
-function fromApiProfile(api, local) {
-  return {
-    ...PROFILE_DEFAULTS,
-    level: api.level,
-    citizenship: api.citizenship_status,
-    service: api.service_required,
-    home: api.home_postal_code,
-    work: api.workplace_postal_code || '',
-    locationPref: api.location_preference,
-    income: api.household_income ? String(api.household_income) : '',
-    members: api.household_member_count ? String(api.household_member_count) : '',
-    budget: Number(api.budget_max),
-    enrolMonth: api.enrollment_month_year,
-    weights: local?.weights ? normalizeWeights(local.weights) : weightsFromCostShare(Number(api.cost_weight))
-  };
-}
-// Priorities are ranked 1-3 and each rank has a preset weight: 50% / 35% / 15%.
-// Weights stay stored as { vacancy, cost, travel } so scoring and the saved profile work as before.
-const WEIGHT_KEYS = ['vacancy', 'cost', 'travel'];
-const WEIGHT_LABELS = { vacancy: 'Vacancy fit', cost: 'Cost fit', travel: 'Travel fit' };
-const RANK_WEIGHTS = [50, 35, 15];
-
-// Most important first. Ties (e.g. old 30/30 weights) keep the default order.
-function priorityOrder(weights) {
-  return [...WEIGHT_KEYS].sort(
-    (a, b) => (Number(weights?.[b]) || 0) - (Number(weights?.[a]) || 0) || WEIGHT_KEYS.indexOf(a) - WEIGHT_KEYS.indexOf(b)
-  );
-}
-function weightsFromOrder(order) {
-  return Object.fromEntries(WEIGHT_KEYS.map((key) => [key, RANK_WEIGHTS[order.indexOf(key)]]));
-}
-// Snap any weights (e.g. a profile saved with the old sliders) to the nearest ranking.
-const normalizeWeights = (weights) => weightsFromOrder(priorityOrder(weights));
-// Give `key` the chosen rank (0-based); the factor that held that rank takes its old one.
-function setRank(weights, key, rank) {
-  const order = priorityOrder(weights);
-  const from = order.indexOf(key);
-  [order[from], order[rank]] = [order[rank], order[from]];
-  return weightsFromOrder(order);
-}
-// The backend keeps only the cost : travel split. The six possible rankings all give a
-// different split (0.70, 0.30, 0.77, 0.23, 0.59, 0.41), so the ranking can be recovered from it.
-function weightsFromCostShare(share) {
-  const target = Number.isFinite(share) ? share : 0.7;
-  const [a, b, c] = WEIGHT_KEYS;
-  const orders = [[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]];
-  let best = weightsFromOrder(orders[0]);
-  let bestDiff = Infinity;
-  orders.forEach((order) => {
-    const w = weightsFromOrder(order);
-    const diff = Math.abs(w.cost / (w.cost + w.travel) - target);
-    if (diff < bestDiff - 1e-9) { best = w; bestDiff = diff; }
-  });
-  return best;
-}
 const LOCATION_PREF_LABELS = { HOME: 'Near home', WORKPLACE: 'Near workplace', EITHER: 'Near home or workplace' };
 
 // Districts come from GET /api/v1/centres/districts (first 2 digits of the postal code)
@@ -569,6 +500,7 @@ function App() {
   const [toast, setToast] = useState('');
   const [profile, setProfile] = useState(null); // the saved family profile (null = not set up yet)
   const [profileId, setProfileId] = useState(null);
+  const [profileName, setProfileName] = useState('My family profile');
   const [profileForm, setProfileForm] = useState(() => ({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() }));
   const [profileSaving, setProfileSaving] = useState(false);
   const setField = (key, value) => setProfileForm((current) => ({ ...current, [key]: value }));
@@ -586,32 +518,81 @@ function App() {
     setMatchMessage('');
   };
 
-  const loadFamilyProfile = async (user) => {
-    let local = null;
-    try { local = JSON.parse(localStorage.getItem(profileKey(user.uid)) || 'null'); } catch { /* ignore */ }
-    let found = local;
-    try {
-      const list = await getFamilyProfiles();
-      if (Array.isArray(list) && list.length) {
-        found = fromApiProfile(list[0], local);
-        setProfileId(list[0].profile_id);
+  const [onboardingState, setOnboardingState] = useState(() => ({
+    status: 'guest',
+    profile: null,
+    profileId: null,
+    profileName: 'My family profile',
+    draft: null,
+    error: null,
+    isFirstSave: false,
+  }));
+
+  const controller = useMemo(() => {
+    return createOnboardingController({
+      loadAccount: async (user) => {
+        try {
+          return await getMyProfile();
+        } catch (profileError) {
+          if (String(profileError.message).includes('404')) {
+            return await createMyProfile(user.displayName || user.email?.split('@')[0] || 'Parent');
+          }
+          throw profileError;
+        }
+      },
+      loadProfiles: async () => {
+        return await getFamilyProfiles();
+      },
+      createProfile: async (payload) => {
+        return await createFamilyProfile(payload);
+      },
+      updateProfile: async (id, payload) => {
+        return await updateFamilyProfile(id, payload);
+      },
+      onState: (nextState) => {
+        setOnboardingState(nextState);
+      },
+    });
+  }, []);
+
+  useEffect(() => {
+    if (onboardingState.status === 'ready') {
+      const p = onboardingState.profile;
+      setProfile(p);
+      setProfileId(onboardingState.profileId);
+      setProfileName(onboardingState.profileName);
+      setProfileForm(p);
+      applyProfileToMatching(p);
+      if (onboardingState.isFirstSave) {
+        setPage('Find my matches');
+        notify('Family profile completed! Here are your matches.');
       }
-    } catch (error) {
-      console.warn('Family profile load:', error.message);
-    }
-    if (isProfileComplete(found)) {
-      const merged = { ...PROFILE_DEFAULTS, ...found, weights: normalizeWeights(found.weights) };
-      setProfile(merged);
-      setProfileForm(merged);
-      applyProfileToMatching(merged);
-    } else {
-      // First action after login: nudge the parent to finish their profile.
+    } else if (onboardingState.status === 'loading') {
       setProfile(null);
-      setProfileForm({ ...PROFILE_DEFAULTS, ...(found || {}), weights: normalizeWeights(found?.weights), enrolMonth: found?.enrolMonth || nextMonthValue() });
-      setPage('Family profile');
-      notify('Welcome! Please finish your family profile first.');
+      setProfileId(null);
+      setProfileName('My family profile');
+      setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
+    } else if (onboardingState.status === 'required') {
+      setProfile(null);
+      setProfileId(onboardingState.profileId);
+      setProfileName(onboardingState.profileName);
+      if (onboardingState.draft) {
+        setProfileForm({
+          ...PROFILE_DEFAULTS,
+          ...onboardingState.draft,
+          enrolMonth: onboardingState.draft.enrolMonth || nextMonthValue(),
+          weights: normalizeWeights(onboardingState.draft.weights),
+        });
+      } else {
+        setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
+      }
+    } else if (onboardingState.status === 'guest') {
+      setProfile(null);
+      setProfileId(null);
+      setProfileName('My family profile');
+      setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
     }
-  };
+  }, [onboardingState]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [selectedCentre, setSelectedCentre] = useState(null);
   const [authMode, setAuthMode] = useState('login');
@@ -662,45 +643,62 @@ function App() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-    console.log(
-  "Firebase authentication state:",
-  user ? user.email : "No user signed in"
-);
+      console.log(
+        "Firebase authentication state:",
+        user ? user.email : "No user signed in"
+      );
 
-setCurrentUser(user);
+      setCurrentUser(user);
 
-// Hide the login screen if Firebase restores the signed-in user.
-if (user) {
-  setAuthMode('');
-}
+      if (!user) {
+        controller.cancel();
+        resetSessionMode();
+        setWatchlistEntries([]);
+        setPage('Overview');
+        return;
+      }
 
-if (!user) {
-  setWatchlistEntries([]);
-  setProfile(null);
-  setProfileId(null);
-  setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
-  return;
-}
+      const isGoogle =
+        user.providerId === 'google.com' ||
+        (Array.isArray(user.providerData) &&
+          user.providerData.some((p) => p.providerId === 'google.com'));
+      const isVerified = Boolean(user.emailVerified) || isGoogle;
 
+      if (!isVerified) {
+        controller.start(user);
+        return;
+      }
+
+      setAuthMode('');
+      controller.start(user);
+    });
+
+    return () => {
+      unsubscribe();
+      controller.cancel();
+    };
+  }, [controller]);
+
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    const isGoogle =
+      currentUser.providerId === 'google.com' ||
+      (Array.isArray(currentUser.providerData) &&
+        currentUser.providerData.some((p) => p.providerId === 'google.com'));
+    const isVerified = Boolean(currentUser.emailVerified) || isGoogle;
+    if (!isVerified) return undefined;
+
+    let cancelled = false;
+    async function syncWatchlist() {
       try {
-        try {
-          await getMyProfile();
-        } catch (profileError) {
-          if (String(profileError.message).includes('404')) {
-            await createMyProfile(user.displayName || user.email?.split('@')[0] || 'Parent');
-          } else {
-            throw profileError;
-          }
-        }
-
         const watchlist = await getMyWatchlist();
+        if (cancelled) return;
         const entries = Array.isArray(watchlist)
           ? watchlist
           : (watchlist?.items || watchlist?.entries || []);
         setWatchlistEntries(entries);
         setWatchlistLoaded(true);
 
-        // Keep browser-saved favourites even if the backend watchlist fails.
         setSaved((currentSaved) => {
           const backendIds = entries.map((entry) => Number(entry.centre_id)).filter(Number.isFinite);
           const localIds = currentSaved.map(Number).filter(Number.isFinite);
@@ -715,14 +713,12 @@ if (!user) {
           return merged;
         });
       } catch (error) {
-        console.warn('Backend profile/watchlist sync:', error.message);
+        console.warn('Backend watchlist sync:', error.message);
       }
-
-      await loadFamilyProfile(user);
-    });
-
-    return unsubscribe;
-  }, []);
+    }
+    syncWatchlist();
+    return () => { cancelled = true; };
+  }, [currentUser]);
 
   const toastTimer = useRef(null);
   const notify = (message, ms = 2600) => {
@@ -904,27 +900,46 @@ if (!user) {
     }
   };
 
+  const isAdmin =
+    onboardingState.status === 'admin' ||
+    currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
+  const isOnboardingGated =
+    Boolean(currentUser) && onboardingState.status !== 'ready' && !isAdmin;
+
+  useEffect(() => {
+    if (isOnboardingGated) {
+      setSelectedCentre(null);
+      setScoreInfoOpen(false);
+    }
+  }, [isOnboardingGated]);
+
   const openPage = (nextPage) => {
-  if (
-    ['Preschool directory', 'My watchlist', 'Family profile', 'Find my matches'].includes(nextPage) &&
-    !currentUser
-  ) {
-    setAuthMode('login');
-    notify('Please sign in to access this feature.');
-    setMobileOpen(false);
-    return;
-  }
+    if (isOnboardingGated) {
+      notify('Please complete your family profile to access this feature.');
+      setMobileOpen(false);
+      return;
+    }
 
-  if (nextPage === 'Find my matches' && !profile) {
-    setPage('Family profile');
-    notify('Finish your family profile first. Matches are built from it.');
-    setMobileOpen(false);
-    return;
-  }
+    if (
+      ['Preschool directory', 'My watchlist', 'Family profile', 'Find my matches'].includes(nextPage) &&
+      !currentUser
+    ) {
+      setAuthMode('login');
+      notify('Please sign in to access this feature.');
+      setMobileOpen(false);
+      return;
+    }
 
-  setPage(nextPage);
-  setMobileOpen(false);
-};
+    if (nextPage === 'Find my matches' && !profile) {
+      setPage('Family profile');
+      notify('Finish your family profile first. Matches are built from it.');
+      setMobileOpen(false);
+      return;
+    }
+
+    setPage(nextPage);
+    setMobileOpen(false);
+  };
 
   const handleAuthSubmit = async (event) => {
     event.preventDefault();
@@ -950,14 +965,11 @@ if (!user) {
         }
 
         await sendEmailVerification(result.user);
-        try {
-          await createMyProfile(name || result.user.displayName || email.split('@')[0]);
-        } catch (apiError) {
-          console.warn('Backend profile registration:', apiError.message);
-        }
         await signOut(auth);
 
-        notify('Account created. Please verify your email.');
+        notify('Account created. Please verify your email before signing in.');
+        setAuthMode('login');
+        return;
       } else if (authMode === 'login') {
         const result = await signInWithEmailAndPassword(auth, email, password);
 
@@ -1002,6 +1014,8 @@ if (!user) {
 
   const handleSignOut = async () => {
     try {
+      controller.cancel();
+      resetSessionMode();
       await signOut(auth);
       setAuthMode('login');
       setPage('Overview');
@@ -1164,12 +1178,12 @@ if (!user) {
       setProfileForm((form) => ({ ...form, weights }));
       try { localStorage.setItem(profileKey(currentUser.uid), JSON.stringify(next)); } catch { /* ignore */ }
       if (profileId) {
-        try { await updateFamilyProfile(profileId, toApiProfile(next)); }
+        try { await updateFamilyProfile(profileId, toApiProfile(next, profileName)); }
         catch (error) { console.warn('Priority sync:', error.message); }
       }
     }, 800);
     return () => clearTimeout(timer);
-  }, [weights, profile, profileId, currentUser]);
+  }, [weights, profile, profileId, profileName, currentUser]);
 
   const filtered = useMemo(() => {
     return centres.filter((centre) => {
@@ -1330,38 +1344,18 @@ if (!user) {
 
   const saveProfile = async (event) => {
     event.preventDefault();
-    const f = profileForm;
-    if (!currentUser) { setAuthMode('login'); notify('Please sign in to save your profile.'); return; }
-    if (!/^\d{6}$/.test(f.home)) { notify('Enter your 6-digit home postal code.'); return; }
-    if (f.work && !/^\d{6}$/.test(f.work)) { notify('Workplace postal code must be 6 digits.'); return; }
-    if (['WORKPLACE', 'EITHER'].includes(f.locationPref) && !f.work) {
-      notify('Add your workplace postal code for this location preference.');
+    if (!currentUser) {
+      setAuthMode('login');
+      notify('Please sign in to save your profile.');
       return;
     }
-    if (!(Number(f.budget) > 0)) { notify('Enter a monthly budget.'); return; }
-
-    const wasFirstTime = !profile;
-    const next = { ...f, budget: Number(f.budget), enrolMonth: f.enrolMonth || nextMonthValue() };
+    if (controller.getState().status === 'saving') return;
     setProfileSaving(true);
-    try { localStorage.setItem(profileKey(currentUser.uid), JSON.stringify(next)); } catch { /* ignore */ }
-
-    let synced = true;
     try {
-      const payload = toApiProfile(next);
-      const result = profileId
-        ? await updateFamilyProfile(profileId, payload)
-        : await createFamilyProfile(payload);
-      setProfileId(result.profile_id);
-    } catch (error) {
-      synced = false;
-      console.warn('Family profile sync:', error.message);
+      await controller.save(profileForm);
+    } finally {
+      setProfileSaving(false);
     }
-
-    setProfile(next);
-    applyProfileToMatching(next);
-    setProfileSaving(false);
-    notify(synced ? 'Profile saved. Your matches now use it.' : 'Profile saved on this device (could not reach the server).');
-    if (wasFirstTime) setPage('Find my matches');
   };
 
   // Matches run automatically from the saved profile.
@@ -1462,11 +1456,13 @@ if (!user) {
         <div className="side-label">YOUR SPACE</div>
 
         <nav>
-          {nav.filter((item) => item.label !== 'Admin dashboard' || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com').map((item) => (
+          {nav.filter((item) => item.label !== 'Admin dashboard' || isAdmin).map((item) => (
             <button
               key={item.label}
               className={`nav-item ${page === item.label ? 'active' : ''}`}
               onClick={() => openPage(item.label)}
+              disabled={isOnboardingGated}
+              style={isOnboardingGated ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
             >
               <item.icon size={18} />
               <span>{item.label}</span>
@@ -1507,7 +1503,7 @@ if (!user) {
             <Menu />
           </button>
           <div className="breadcrumb">
-            Home <ChevronRight size={14} /> <b>{page}</b>
+            Home <ChevronRight size={14} /> <b>{isOnboardingGated ? 'Onboarding' : page}</b>
           </div>
           <div className="top-actions">
             <span className="today-label">Your family's next big step starts here</span>
@@ -1643,7 +1639,196 @@ if (!user) {
             </div>
           )}
 
-          {page === 'Overview' && (
+          {isOnboardingGated ? (
+            <section className="onboarding-flow">
+              {onboardingState.status === 'verification-required' && (
+                <div className="panel onboarding-panel">
+                  <div className="eyebrow"><Baby size={16} /> EMAIL VERIFICATION REQUIRED</div>
+                  <h2>Verify your email address</h2>
+                  <p className="lead">
+                    We sent a verification link to <strong>{currentUser?.email}</strong>.
+                    Please click the link in your email to verify your account, then sign in again.
+                  </p>
+                  <div className="onboarding-actions">
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      onClick={async () => {
+                        try {
+                          await sendEmailVerification(currentUser);
+                          notify('Verification email sent! Check your inbox.');
+                        } catch (err) {
+                          notify(err.message);
+                        }
+                      }}
+                    >
+                      Resend verification email
+                    </button>
+                    <button type="button" className="secondary-btn" onClick={handleSignOut}>
+                      <LogOut size={15} /> Sign out
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {onboardingState.status === 'loading' && (
+                <div className="panel onboarding-panel">
+                  <div className="eyebrow"><Sparkles size={16} /> ONE MOMENT</div>
+                  <h2>Loading your profile…</h2>
+                  <p className="lead">Checking your family preferences and account details.</p>
+                  <div className="onboarding-actions">
+                    <button type="button" className="secondary-btn" onClick={handleSignOut}>
+                      <LogOut size={15} /> Sign out
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {onboardingState.status === 'error' && onboardingState.errorStage === 'load' && (
+                <div className="panel onboarding-panel error-panel">
+                  <div className="eyebrow"><CircleHelp size={16} /> COULD NOT LOAD PROFILE</div>
+                  <h2>Unable to load family profile</h2>
+                  <p className="lead">{onboardingState.error || 'A service error occurred while retrieving your profile.'}</p>
+                  <div className="onboarding-actions">
+                    <button type="button" className="primary-btn" onClick={() => controller.start(currentUser)}>
+                      Try again
+                    </button>
+                    <button type="button" className="secondary-btn" onClick={handleSignOut}>
+                      <LogOut size={15} /> Sign out
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {(onboardingState.status === 'required' || onboardingState.status === 'saving' || (onboardingState.status === 'error' && onboardingState.errorStage === 'save')) && (
+                <>
+                  <PageTitle
+                    eyebrow="REQUIRED FAMILY PROFILE SETUP"
+                    title="Complete your family profile"
+                    subtitle="Tell us once about your child, location and budget before entering KidCare Match. Matches and commute estimates are built from this profile."
+                  />
+
+                  {onboardingState.error && (
+                    <div className="error-banner" role="alert">
+                      <b>Could not save profile:</b> {onboardingState.error}
+                      <span>Please check your details and try saving again.</span>
+                    </div>
+                  )}
+
+                  <form className="profile-form panel" onSubmit={saveProfile}>
+                    <div className="form-section">
+                      <h3><Baby size={19} /> Child information</h3>
+                      <div className="form-grid">
+                        <label>Child's level
+                          <select value={profileForm.level} onChange={(e) => setField('level', e.target.value)}>
+                            {Object.entries(LEVEL_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>Citizenship (for fees)
+                          <select value={profileForm.citizenship} onChange={(e) => setField('citizenship', e.target.value)}>
+                            {Object.entries(CITIZENSHIP_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>Required care type
+                          <select value={profileForm.service} onChange={(e) => setField('service', e.target.value)}>
+                            <option>Full Day</option>
+                            <option>Half Day</option>
+                          </select>
+                        </label>
+                        <label>Desired enrolment month
+                          <input type="month" value={profileForm.enrolMonth} onChange={(e) => setField('enrolMonth', e.target.value)} />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="form-section">
+                      <h3><MapPin size={19} /> Location</h3>
+                      <div className="form-grid">
+                        <label>Home postal code
+                          <input
+                            value={profileForm.home} maxLength={6} inputMode="numeric"
+                            placeholder="6-digit postal code"
+                            onChange={(e) => setField('home', e.target.value.replace(/\D/g, ''))}
+                          />
+                        </label>
+                        <label>Workplace postal code (optional)
+                          <input
+                            value={profileForm.work} maxLength={6} inputMode="numeric"
+                            placeholder="6-digit postal code"
+                            onChange={(e) => setField('work', e.target.value.replace(/\D/g, ''))}
+                          />
+                        </label>
+                        <label>Preferred location
+                          <select value={profileForm.locationPref} onChange={(e) => setField('locationPref', e.target.value)}>
+                            {Object.entries(LOCATION_PREF_LABELS).map(([value, label]) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="form-section">
+                      <h3><Wallet size={19} /> Budget & priorities</h3>
+                      <div className="form-grid">
+                        <label>Monthly budget (SGD)
+                          <input
+                            type="number" min="1" value={profileForm.budget}
+                            onChange={(e) => setField('budget', e.target.value)}
+                          />
+                        </label>
+                        <label>Household members (optional)
+                          <input
+                            type="number" min="1" value={profileForm.members}
+                            onChange={(e) => setField('members', e.target.value)}
+                          />
+                        </label>
+                        <label>Gross monthly household income, SGD (optional)
+                          <input
+                            type="number" min="0" value={profileForm.income}
+                            onChange={(e) => setField('income', e.target.value)}
+                          />
+                        </label>
+                      </div>
+
+                      <div className="weight-title">
+                        <h4 className="title-with-help">What matters most? <button
+                          type="button"
+                          className="info-btn small"
+                          aria-label="How match scores work"
+                          aria-haspopup="dialog"
+                          onClick={() => setScoreInfoOpen(true)}
+                        >
+                          <CircleHelp size={12} />
+                        </button></h4><span>Rank 1 = 50% · 2 = 35% · 3 = 15%</span>
+                      </div>
+                      <PriorityRanking weights={profileForm.weights} onChange={updateProfileRank} />
+                    </div>
+
+                    <div className="form-footer">
+                      <span className="fine-print">
+                        Saved to your account and confirmed by the server before proceeding.
+                      </span>
+                      <div className="form-footer-buttons">
+                        <button type="button" className="secondary-btn" onClick={handleSignOut}>
+                          <LogOut size={15} /> Sign out
+                        </button>
+                        <button type="submit" className="primary-btn" disabled={onboardingState.status === 'saving'}>
+                          {onboardingState.status === 'saving' ? 'Saving…' : 'Save profile'} <Check size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+                </>
+              )}
+            </section>
+          ) : (
+            <>
+              {page === 'Overview' && (
             <>
               <section className="welcome-row">
                 <div>
@@ -2376,8 +2561,8 @@ if (!user) {
                   <span className="fine-print">
                     Saved to your account and used by Find my matches. Travel is scored from postal codes, not commute time.
                   </span>
-                  <button type="submit" className="primary-btn" disabled={profileSaving}>
-                    {profileSaving ? 'Saving…' : 'Save profile'} <Check size={16} />
+                  <button type="submit" className="primary-btn" disabled={profileSaving || onboardingState.status === 'saving'}>
+                    {profileSaving || onboardingState.status === 'saving' ? 'Saving…' : 'Save profile'} <Check size={16} />
                   </button>
                 </div>
               </form>
@@ -2385,9 +2570,11 @@ if (!user) {
           )}
 
           {page === 'Admin dashboard' && (
-            currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com'
+            isAdmin
               ? <AdminDashboard />
               : <section className="panel"><h2>Administrator access required</h2><p>Sign in with the authorised administrator account to access this area.</p><button className="primary-btn" onClick={() => { setPage('Overview'); setAuthMode('login'); }}>Sign in</button></section>
+          )}
+            </>
           )}
         </div>
 
@@ -2397,7 +2584,7 @@ if (!user) {
         </footer>
       </main>
 
-      {scoreInfoOpen && (
+      {scoreInfoOpen && !isOnboardingGated && (
         <div className="modal-backdrop" onClick={() => setScoreInfoOpen(false)}>
           <section
             className="info-modal"
@@ -2435,7 +2622,7 @@ if (!user) {
         </div>
       )}
 
-      {selectedCentre && (
+      {selectedCentre && !isOnboardingGated && (
         <div className="modal-backdrop" onClick={() => setSelectedCentre(null)}>
           <section className="detail-modal" onClick={(event) => event.stopPropagation()}>
             <button className="modal-close" onClick={() => setSelectedCentre(null)}>
@@ -2450,6 +2637,17 @@ if (!user) {
                   {selectedCentre.address || 'Address not provided'}{' '}
                   {selectedCentre.postal ? `(${selectedCentre.postal})` : ''}
                 </p>
+                <CentreCommute
+                  centre={selectedCentre}
+                  currentUser={currentUser}
+                  profileId={profileId}
+                  profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
+                  onSignIn={() => setAuthMode('login')}
+                  onEditProfile={() => {
+                    setSelectedCentre(null);
+                    openPage('Family profile');
+                  }}
+                />
                 <p><b>Centre code:</b> {selectedCentre.centre_code || 'Not provided'}</p>
                 <p><b>Contact:</b> {selectedCentre.contact || 'Not provided'}</p>
                 <p><b>Email:</b> {selectedCentre.email || 'Not provided'}</p>
