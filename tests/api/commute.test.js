@@ -102,6 +102,59 @@ describe("getCentreCommute API client", () => {
     );
   });
 
+  it("negotiates commute capabilities without changing legacy requests", async () => {
+    const capabilities = {
+      direct_baseline_contract: "direct_baseline_v1",
+      sampling_contract: null,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, capabilities));
+
+    await expect(api.getCommuteCapabilities()).resolves.toEqual(capabilities);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.invalid/api/v1/commute/capabilities",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
+  it("opts into a direct baseline only when explicitly requested", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "drive" }));
+
+    await api.getCentreCommute(101, {
+      profileId: "prof-1",
+      includeDirectBaseline: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.invalid/api/v1/centres/101/commute",
+      expect.objectContaining({
+        body: JSON.stringify({
+          profile_id: "prof-1",
+          mode: "drive",
+          include_direct_baseline: true,
+        }),
+      })
+    );
+  });
+
+  it("keeps the legacy public-transport sample pair when opting into the baseline only", async () => {
+    const samplePair = ["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"];
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "pt" }));
+
+    await api.getCentreCommute(101, {
+      profileId: "prof-1", mode: "pt", samplePair, includeDirectBaseline: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.invalid/api/v1/centres/101/commute",
+      expect.objectContaining({
+        body: JSON.stringify({
+          profile_id: "prof-1", mode: "pt", sample_pair: samplePair,
+          include_direct_baseline: true,
+        }),
+      })
+    );
+  });
+
   it("supports walking and cycling mode payloads", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "walk" }));
     fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "cycle" }));
