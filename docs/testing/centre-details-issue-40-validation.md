@@ -10,7 +10,7 @@ This repository contains no deployed backend build/version, timing certification
 
 ## Automated checks
 
-- `npm run test:coverage` passed: 14 files, 209 tests; 100% statement and line coverage overall. API adapter coverage was 100% statements/lines and 97.4% branches.
+- `npm run test:coverage` passed: 14 test files, 209 tests. The configured coverage report covers API wrappers only (`src/api.js` and `src/admin/adminApi.js`): 100% statements and lines overall; `src/api.js` had 100% statements/lines and 97.4% branches. This does not measure UI or navigation coverage.
 - `npm run build` passed. Vite reported its large JavaScript chunk warning (about 1,017 kB minified); the build completed.
 - Focused API, commute-session and commute-view regressions cover exact capability/request opt-ins, default-off legacy serialization, unsupported and recoverable discovery failures, malformed response markers, stale-compatible controller operation, raw arithmetic, rounding and independent route availability.
 - Display arithmetic cases include 2,491/1,829 seconds (11-minute difference despite independently rounded 42/30-minute totals), 2,520/1,800 (12 minutes), zero/negative, positive under 60 seconds, and an exact half-minute boundary (90 seconds rounds to 2 minutes). PT fixtures require elapsed timing, an initial wait, a common initial departure and onward departure equal to normalized first-leg arrival.
