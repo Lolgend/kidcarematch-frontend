@@ -26,7 +26,6 @@ export function claimCentreReturnTab() {
     try { storage?.setItem(TAB_KEY, id); } catch { /* persistence may be disabled */ }
   }
   const navigationType = performance.getEntriesByType('navigation')[0]?.type;
-  if (navigationType === 'reload') return { ready: Promise.resolve(true), dispose() {} };
   if (!storage) return { ready: Promise.resolve(true), dispose() {} };
   if (typeof BroadcastChannel === 'undefined') {
     if (navigationType !== 'reload') clearCentreReturnContext();
@@ -36,14 +35,17 @@ export function claimCentreReturnTab() {
   const channel = new BroadcastChannel(CHANNEL_NAME);
   const instanceId = token();
   let collided = false;
+  let timer = null;
   channel.onmessage = ({ data }) => {
     if (data?.id !== id) return;
     if (data.type === 'hello') channel.postMessage({ type: 'claim', id, requestId: data.instanceId });
     if (data.type === 'claim' && data.requestId === instanceId) collided = true;
   };
-  channel.postMessage({ type: 'hello', id, instanceId });
+  // Reloads keep their own context, but still need to answer a later duplicate-tab
+  // claim so a fresh document cannot inherit the reloaded tab's origin.
+  if (navigationType !== 'reload') channel.postMessage({ type: 'hello', id, instanceId });
   const ready = new Promise((resolve) => {
-    const timer = window.setTimeout(() => {
+    timer = window.setTimeout(() => {
       if (collided) {
         clearCentreReturnContext();
         const nextId = token();
@@ -53,11 +55,8 @@ export function claimCentreReturnTab() {
       }
       resolve(true);
     }, 250);
-    channel.addEventListener('message', ({ data }) => {
-      if (data?.type === 'claim' && data.requestId === instanceId) collided = true;
-    });
   });
-  return { ready, dispose() { channel.close(); } };
+  return { ready, dispose() { if (timer !== null) window.clearTimeout(timer); channel.close(); } };
 }
 
 export function saveCentreReturnContext(context) {

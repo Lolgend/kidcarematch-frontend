@@ -75,6 +75,140 @@ describe("createCommuteSession controller", () => {
     expect(latest.error).toBe(null);
   });
 
+  it("discovers the direct-baseline contract before opting in, without requiring sampling support", async () => {
+    const getCapabilities = vi.fn().mockResolvedValue({
+      direct_baseline_contract: "direct_baseline_v1",
+      sampling_contract: null,
+    });
+    loadCommute = vi.fn().mockResolvedValue({
+      ...mockCommute(),
+      comparison_contract: "direct_baseline_v1",
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities,
+      directBaselineEnabled: true,
+      onState: (state) => states.push(state),
+    });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(getCapabilities).toHaveBeenCalledTimes(1);
+    expect(loadCommute).toHaveBeenCalledWith(
+      101,
+      { profileId: "prof-1", mode: "drive", samplePair: null, includeDirectBaseline: true },
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+    expect(states.at(-1).directBaselineStatus).toBe("supported");
+  });
+
+  it("keeps legacy route requests when direct-baseline release is off", async () => {
+    const getCapabilities = vi.fn();
+    session = createCommuteSession({ loadCommute, getCapabilities, directBaselineEnabled: false });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(getCapabilities).not.toHaveBeenCalled();
+    expect(loadCommute).toHaveBeenCalledWith(
+      101,
+      { profileId: "prof-1", mode: "drive", samplePair: null },
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
+  it("treats a missing direct marker as unsupported while retaining the legacy route", async () => {
+    const getCapabilities = vi.fn().mockResolvedValue({
+      direct_baseline_contract: null,
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities,
+      directBaselineEnabled: true,
+      onState: (state) => states.push(state),
+    });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(loadCommute).toHaveBeenCalledWith(
+      101,
+      { profileId: "prof-1", mode: "drive", samplePair: null },
+      expect.any(Object)
+    );
+    expect(states.at(-1).data.centre_id).toBe(101);
+    expect(states.at(-1).directBaselineStatus).toBe("unsupported");
+  });
+
+  it("keeps direct-baseline support independent from an unknown sampling marker", async () => {
+    loadCommute = vi.fn().mockResolvedValue({
+      ...mockCommute(), comparison_contract: "direct_baseline_v1",
+    });
+    const getCapabilities = vi.fn().mockResolvedValue({
+      direct_baseline_contract: "direct_baseline_v1",
+      sampling_contract: "future-policy-v2",
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities,
+      directBaselineEnabled: true,
+      onState: (state) => states.push(state),
+    });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(loadCommute).toHaveBeenCalledWith(
+      101,
+      { profileId: "prof-1", mode: "drive", samplePair: null, includeDirectBaseline: true },
+      expect.any(Object)
+    );
+    expect(states.at(-1).directBaselineStatus).toBe("supported");
+  });
+
+  it("fails closed when required independent capability fields are missing or malformed", async () => {
+    for (const discovery of [
+      { direct_baseline_contract: "direct_baseline_v1" },
+      { direct_baseline_contract: "direct_baseline_v1", sampling_contract: {} },
+    ]) {
+      const getCapabilities = vi.fn().mockResolvedValue(discovery);
+      loadCommute = vi.fn().mockResolvedValue(mockCommute());
+      session = createCommuteSession({
+        loadCommute, getCapabilities, directBaselineEnabled: true,
+        onState: (state) => states.push(state),
+      });
+
+      await session.open({ centreId: 101, profileId: "prof-1" });
+
+      expect(loadCommute).toHaveBeenCalledWith(
+        101,
+        { profileId: "prof-1", mode: "drive", samplePair: null },
+        expect.any(Object)
+      );
+      expect(states.at(-1).directBaselineStatus).toBe("unsupported");
+      session.destroy();
+    }
+  });
+
+  it("keeps capability discovery failures recoverable and loads the legacy route", async () => {
+    const getCapabilities = vi.fn().mockRejectedValue(new Error("503: service unavailable"));
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities,
+      directBaselineEnabled: true,
+      onState: (state) => states.push(state),
+    });
+
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(loadCommute).toHaveBeenCalledWith(
+      101,
+      { profileId: "prof-1", mode: "drive", samplePair: null },
+      expect.any(Object)
+    );
+    expect(states.at(-1).data.centre_id).toBe(101);
+    expect(states.at(-1).directBaselineStatus).toBe("error");
+    expect(states.at(-1).directBaselineError.message).toContain("503");
+  });
+
   it("retains selected mode when opening a different centre", async () => {
     session = createCommuteSession({
       loadCommute,
@@ -150,8 +284,11 @@ describe("createCommuteSession controller", () => {
     });
 
     const pDrive = session.open({ centreId: 101, profileId: "prof-1" });
-    await session.setMode("walk");
+    const pWalk = session.setMode("walk");
 
+    expect(states.at(-1).loading).toBe(true);
+    expect(states.at(-1).data).toBe(null);
+    await pWalk;
     expect(states[states.length - 1].data.mode).toBe("walk");
 
     resolveDrive(mockCommute(101, "drive"));

@@ -482,6 +482,7 @@ function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const detailRequestRef = useRef(0);
+  const activeAccountIdRef = useRef(null);
   const [detailReviews, setDetailReviews] = useState([]);
   const [detailReviewsLoading, setDetailReviewsLoading] = useState(false);
   const [detailReviewsError, setDetailReviewsError] = useState('');
@@ -773,6 +774,23 @@ function App() {
           resetSessionMode();
         }
         try { localStorage.removeItem('kidcare-watchlist'); } catch { /* storage may be disabled */ }
+      }
+
+      const nextAccountId = user?.uid == null ? null : String(user.uid);
+      const accountChanged = activeAccountIdRef.current !== nextAccountId;
+      activeAccountIdRef.current = nextAccountId;
+      if (accountChanged) {
+        detailRequestRef.current += 1;
+        setDetailLoading(false);
+        setDetailError('');
+        setDetailReviews([]);
+        setDetailReviewsLoading(false);
+        setDetailReviewsError('');
+        setMyCentreReview(null);
+        setMyReviewLoading(false);
+        setMyReviewError('');
+        setReviewRating(5);
+        setReviewComment('');
       }
 
       setCurrentUser(user);
@@ -2979,6 +2997,7 @@ function App() {
                         centre={selectedCentre}
                         currentUser={currentUser}
                         profileId={profileId}
+                        workplaceConfigured={profile ? Boolean(profile.work) : undefined}
                         profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
                         onSignIn={() => setAuthMode('login')}
                         onEditProfile={() => openPage('Family profile')}

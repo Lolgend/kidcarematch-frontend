@@ -286,6 +286,24 @@
 }
 
 /* Centre location map & commute */
+.commute-deviation{margin:18px 0 12px;padding:16px 0;border-top:1px solid #d9e1dc;border-bottom:1px solid #d9e1dc;color:#173b2a}
+.commute-deviation>strong{display:block;font-size:clamp(1.25rem,2.4vw,1.8rem);line-height:1.2;font-weight:750;letter-spacing:-.025em}
+.commute-deviation p{margin:8px 0 2px;color:#263c31;font-weight:650;font-variant-numeric:tabular-nums}
+.commute-deviation small{color:#52665a}
+.commute-route-legend{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin:12px 0;color:#233b2d;font-size:14px}
+.commute-route-legend button{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:4px 6px;border:0;border-radius:5px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.commute-route-legend button:hover{background:#edf3ee}
+.commute-route-legend button:focus-visible{outline:3px solid #136c45;outline-offset:2px}
+.commute-route-key{display:inline-block;width:28px;height:0;border-top:4px solid #2563eb}
+.commute-route-key.direct{border-top:3px dashed #59636e}
+.commute-route-key.centre-workplace{border-color:#07805f}
+.commute-direct-summary{display:flex;justify-content:space-between;gap:16px;padding:0 0 14px;border-bottom:1px solid #d9e1dc;color:#263c31}
+.commute-direct-summary span{font-variant-numeric:tabular-nums}
+.commute-direction-arrow{display:grid;place-items:center;background:transparent;color:#263b4a}
+.commute-direction-arrow svg{width:20px;height:20px;overflow:visible}
+.commute-legend-indicator.indicator-solid-green,.commute-leg-indicator.indicator-solid-green{background:#07805f}
+@media(max-width:700px){.centre-details-primary .centre-map-wrapper{height:280px;min-height:280px;aspect-ratio:auto}.commute-route-legend{gap:4px 10px}.commute-route-legend button{min-height:42px}.commute-direct-summary{align-items:flex-start;flex-direction:column;gap:4px}}
+
 .centre-map-section {
   margin: 16px 0 20px;
 }
@@ -395,6 +413,13 @@
   background: #2563eb;
   border-color: #1d4ed8;
   color: #fff;
+}
+
+.commute-estimate-note {
+  margin: 0 0 10px;
+  color: #4b584e;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .commute-unresolvable-warning {

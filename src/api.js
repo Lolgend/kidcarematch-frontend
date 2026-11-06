@@ -50,13 +50,18 @@ export async function apiRequest(endpoint, options = {}) {
         ? (body.detail?.code || body.detail?.message || body.detail || body.message)
         : body;
 
-    throw new Error(
+    const error = new Error(
       `${response.status}: ${
         typeof detail === "string"
           ? detail
           : "API request failed"
       }`
     );
+    error.status = response.status;
+    error.code = typeof body === "object"
+      ? (body.detail?.code || body.code || null)
+      : null;
+    throw error;
   }
 
   return body;
@@ -93,6 +98,9 @@ const qs = (params = {}) => {
 // PRESCHOOL CENTRES
 // ==========================================
 
+export const getCommuteCapabilities = (options = {}) =>
+  apiRequest("/api/v1/commute/capabilities", { method: "GET", ...options });
+
 export const getCentres = (params = {}) =>
   apiRequest(`/api/v1/centres${qs(params)}`);
 
@@ -120,7 +128,13 @@ export const getCentreLocation = (centreId, options = {}) =>
 
 export const getCentreCommute = (
   centreId,
-  { profileId, mode = "drive", samplePair = null } = {},
+  {
+    profileId,
+    mode = "drive",
+    samplePair = null,
+    includeDirectBaseline = false,
+    sampling = null,
+  } = {},
   options = {}
 ) =>
   apiRequest(
@@ -131,6 +145,8 @@ export const getCentreCommute = (
         profile_id: profileId,
         mode,
         ...(samplePair ? { sample_pair: samplePair } : {}),
+        ...(includeDirectBaseline ? { include_direct_baseline: true } : {}),
+        ...(sampling ? { sampling } : {}),
       }),
       ...options,
     }
