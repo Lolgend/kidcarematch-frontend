@@ -4,13 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-leaflet", () => ({
   useMap: () => ({ invalidateSize: vi.fn(), setView: vi.fn(), fitBounds: vi.fn(), getContainer: () => ({}) }),
-  MapContainer: ({ children, center, zoom, style }) =>
+  MapContainer: ({ children, center, zoom, style, zoomAnimation }) =>
     React.createElement(
       "div",
       {
         "data-testid": "mock-map-container",
         "data-center": JSON.stringify(center),
         "data-zoom": zoom,
+        "data-zoom-animation": zoomAnimation,
         style,
       },
       children
@@ -85,6 +86,7 @@ describe("CentreLocationMap presentation", () => {
     expect(html).toContain("centre-map-wrapper");
     expect(html).toContain('data-testid="mock-map-container"');
     expect(html).toContain('data-center="[1.3521,103.8198]"');
+    expect(html).toContain('data-zoom-animation="false"');
     expect(html).toContain('data-url="https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png"');
     expect(html).toContain('data-testid="mock-marker"');
     expect(html).toContain('data-position="[1.3521,103.8198]"');
