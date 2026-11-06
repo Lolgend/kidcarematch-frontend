@@ -69,6 +69,7 @@ export function createCommuteSession({
   let selectedSample = "weekday";
   let centreId = null;
   let profileId = null;
+  let locationKey = null;
   let samplePair = initialSamplePair || getSessionSamplePair(userId);
   let loading = false;
   let error = null;
@@ -84,6 +85,7 @@ export function createCommuteSession({
       selectedSampleKind: selectedSample,
       centreId,
       profileId,
+      locationKey,
       samplePair,
       loading,
       error,
@@ -193,6 +195,7 @@ export function createCommuteSession({
         selectedSampleKind: selectedSample,
         centreId,
         profileId,
+        locationKey,
         samplePair,
         loading,
         error,
@@ -200,9 +203,15 @@ export function createCommuteSession({
       };
     },
 
-    async open({ centreId: newCentreId, profileId: newProfileId }) {
+    async open({ centreId: newCentreId, profileId: newProfileId, locationKey: newLocationKey = null }) {
+      const selectionChanged = centreId !== newCentreId || profileId !== newProfileId || locationKey !== newLocationKey;
       centreId = newCentreId;
       profileId = newProfileId;
+      locationKey = newLocationKey;
+      if (selectionChanged) {
+        data = null;
+        error = null;
+      }
       await executeRequest();
     },
 
@@ -238,6 +247,7 @@ export function createCommuteSession({
       resetSessionMode();
       centreId = null;
       profileId = null;
+      locationKey = null;
       loading = false;
       error = null;
       data = null;
@@ -257,6 +267,7 @@ export function createCommuteSession({
 export function useCommuteSession({
   centreId,
   profileId,
+  locationKey = null,
   userId = null,
   loadCommute = defaultGetCentreCommute,
   initialMode,
@@ -270,6 +281,7 @@ export function useCommuteSession({
     selectedSampleKind: "weekday",
     centreId,
     profileId,
+    locationKey,
     samplePair: currentSamplePair,
     loading: Boolean(centreId && profileId),
     error: null,
@@ -277,9 +289,7 @@ export function useCommuteSession({
   });
 
   const sessionRef = useRef(null);
-
-  if (!sessionRef.current) {
-    sessionRef.current = createCommuteSession({
+  const createSession = () => createCommuteSession({
       loadCommute,
       onState: (nextState) => {
         if (nextState.mode) {
@@ -294,21 +304,43 @@ export function useCommuteSession({
       initialSamplePair: currentSamplePair,
       userId,
     });
-  }
+  if (!sessionRef.current) sessionRef.current = { userId, session: createSession() };
 
   useEffect(() => {
-    sessionRef.current.open({ centreId, profileId });
+    if (sessionRef.current.userId !== userId) {
+      sessionRef.current.session.destroy();
+      sessionRef.current = { userId, session: createSession() };
+      setState({
+        mode: getSessionMode(userId), selectedSample: 'weekday', selectedSampleKind: 'weekday',
+        centreId, profileId, locationKey, samplePair: getSessionSamplePair(userId),
+        loading: Boolean(centreId && profileId), error: null, data: null,
+      });
+    }
+    const session = sessionRef.current.session;
+    session.open({ centreId, profileId, locationKey });
     return () => {
       // Don't fully reset mode across centre unmounts, but abort inflight requests
-      sessionRef.current.destroy();
+      session.destroy();
     };
-  }, [centreId, profileId]);
+  }, [centreId, profileId, locationKey, userId]);
+
+  const visibleState = state.centreId === centreId && state.profileId === profileId && state.locationKey === locationKey && sessionRef.current.userId === userId
+    ? state
+    : {
+      ...state,
+      mode: sessionRef.current.userId === userId ? state.mode : currentMode,
+      selectedSample: sessionRef.current.userId === userId ? state.selectedSample : 'weekday',
+      selectedSampleKind: sessionRef.current.userId === userId ? state.selectedSampleKind : 'weekday',
+      samplePair: sessionRef.current.userId === userId ? state.samplePair : currentSamplePair,
+      centreId, profileId, locationKey,
+      loading: Boolean(centreId && profileId), error: null, data: null,
+    };
 
   return {
-    ...state,
-    setMode: (m) => sessionRef.current.setMode(m),
-    selectSample: (k) => sessionRef.current.selectSample(k),
-    retry: () => sessionRef.current.retry(),
-    reset: () => sessionRef.current.reset(),
+    ...visibleState,
+    setMode: (m) => sessionRef.current.session.setMode(m),
+    selectSample: (k) => sessionRef.current.session.selectSample(k),
+    retry: () => sessionRef.current.session.retry(),
+    reset: () => sessionRef.current.session.reset(),
   };
 }

@@ -2,6 +2,7 @@ import React from "react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import { useCentreLocation } from "./centreLocation.js";
+import MapViewportController from "./MapViewportController.jsx";
 
 export function CentreLocationMapView({
   loading,
@@ -40,13 +41,14 @@ export function CentreLocationMapView({
             scrollWheelZoom={false}
             style={{ height: "100%", width: "100%" }}
           >
+            <MapViewportController coordinates={[[coordinate.lat, coordinate.lng]]} />
             <TileLayer
               attribution='&copy; <a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener noreferrer">OneMap</a> &copy; Singapore Land Authority'
               url="https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png"
               maxZoom={19}
               minZoom={11}
             />
-            <Marker position={[coordinate.lat, coordinate.lng]}>
+            <Marker position={[coordinate.lat, coordinate.lng]} alt="Centre" title="Centre">
               <Popup>
                 <strong>{centreName || "Preschool Centre"}</strong>
               </Popup>

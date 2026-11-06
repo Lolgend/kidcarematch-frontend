@@ -14,18 +14,24 @@ vi.mock("react-leaflet", () => ({
       },
       children
     ),
+  useMap: () => ({
+    invalidateSize: vi.fn(), setView: vi.fn(), fitBounds: vi.fn(),
+    getContainer: () => ({})
+  }),
   TileLayer: ({ url, attribution }) =>
     React.createElement("div", {
       "data-testid": "mock-tile-layer",
       "data-url": url,
       "data-attribution": attribution,
     }),
-  Marker: ({ children, position }) =>
+  Marker: ({ children, position, alt, title }) =>
     React.createElement(
       "div",
       {
         "data-testid": "mock-marker",
         "data-position": JSON.stringify(position),
+        "data-alt": alt,
+        "data-title": title,
       },
       children
     ),
@@ -86,6 +92,33 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("Loading commute route…");
   });
 
+  it("keeps the independent centre-location map visible while a commute request fails", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(CentreCommuteView, {
+        currentUser: { uid: "u1" }, profileId: "p1",
+        centre: { id: 101, name: "Star Preschool" }, loading: false,
+        error: new Error("route service down"),
+        getCentreLocation: vi.fn(),
+      })
+    );
+    expect(html).toContain("Loading centre location map");
+    expect(html).toContain("Could not load commute route");
+  });
+
+  it("labels the map anchors and withholds the map when no real centre coordinate exists", () => {
+    const data = {
+      anchors: { home: { lat: 1.3, lng: 103.8 } },
+      samples: [{ kind: "single", legs: [], totals: null }],
+    };
+    const html = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "p1", centre: { id: 101 },
+      loading: false, data,
+    }));
+    expect(html).toContain("Map view is currently unavailable for this centre");
+    expect(html).not.toContain("mock-map-container");
+    expect(html).not.toContain("1.3521");
+  });
+
   it("renders single-leg driving commute with markers, polyline, and totals", () => {
     const data = {
       centre_id: 101,
@@ -130,6 +163,9 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("mock-map-container");
     expect(html).toContain("Home");
     expect(html).toContain("Star Preschool");
+    expect(html).toContain('data-alt="Home"');
+    expect(html).toContain('data-alt="Centre"');
+    expect(html).toContain("Centre</strong>: Star Preschool");
     expect(html).toContain("10 mins");
     expect(html).toContain("5.0 km");
     expect(html).toContain("Total travel: 10 mins (5.0 km)");
@@ -306,15 +342,15 @@ describe("CentreCommute presentation", () => {
       })
     );
 
-    expect(html).toContain('role="radiogroup"');
+    expect(html).toContain('role="group"');
     expect(html).toContain('aria-label="Travel mode"');
     expect(html).toContain("Driving");
     expect(html).toContain("Public transport");
     expect(html).toContain("Walking");
     expect(html).toContain("Cycling");
-    expect(html).toContain('role="radio" aria-checked="true" class="commute-mode-btn active">Walking');
-    expect(html).toContain('role="radio" aria-checked="false" class="commute-mode-btn ">Driving');
-    expect(html).toContain('role="radio" aria-checked="false" class="commute-mode-btn ">Cycling');
+    expect(html).toContain('aria-pressed="true" class="commute-mode-btn active">Walking');
+    expect(html).toContain('aria-pressed="false" class="commute-mode-btn ">Driving');
+    expect(html).toContain('aria-pressed="false" class="commute-mode-btn ">Cycling');
   });
 
   it("renders Public transport mode control button", () => {
@@ -584,7 +620,7 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("3.5 km");
     expect(html).toContain("Total travel: 45 mins (3.5 km)");
     expect(html).toContain("Excludes time spent at the centre");
-    expect(html).toContain('role="radio" aria-checked="true" class="commute-mode-btn active">Walking');
+    expect(html).toContain('aria-pressed="true" class="commute-mode-btn active">Walking');
   });
 
   it("renders single-leg cycling commute with actual metrics, geometry, and totals", () => {
@@ -633,7 +669,7 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("15 mins");
     expect(html).toContain("3.7 km");
     expect(html).toContain("Total travel: 15 mins (3.7 km)");
-    expect(html).toContain('role="radio" aria-checked="true" class="commute-mode-btn active">Cycling');
+    expect(html).toContain('aria-pressed="true" class="commute-mode-btn active">Cycling');
   });
 
   it("renders two-leg walking commute through centre with combined totals and distinct styling", () => {
@@ -822,13 +858,9 @@ describe("CentreCommute presentation", () => {
     );
 
     // Tabs
-    expect(html).toContain('role="tablist"');
-    expect(html).toContain(
-      'role="tab" id="tab-weekday" aria-selected="true" class="commute-sample-tab active"'
-    );
-    expect(html).toContain(
-      'role="tab" id="tab-weekend" aria-selected="false" class="commute-sample-tab "'
-    );
+    expect(html).toContain('role="group" aria-label="Representative travel day"');
+    expect(html).toContain('aria-pressed="true" class="commute-sample-tab active"');
+    expect(html).toContain('aria-pressed="false" class="commute-sample-tab "');
     expect(html).toContain("Weekday");
     expect(html).toContain("Weekend");
     expect(html).toContain("11 Nov 08:00");
@@ -916,12 +948,8 @@ describe("CentreCommute presentation", () => {
     );
 
     // Weekend tab is selected
-    expect(htmlWeekend).toContain(
-      'role="tab" id="tab-weekend" aria-selected="true" class="commute-sample-tab active"'
-    );
-    expect(htmlWeekend).toContain(
-      'role="tab" id="tab-weekday" aria-selected="false" class="commute-sample-tab "'
-    );
+    expect(htmlWeekend).toContain('aria-pressed="true" class="commute-sample-tab active"');
+    expect(htmlWeekend).toContain('aria-pressed="false" class="commute-sample-tab "');
 
     // Weekend numbers: 30 mins (5.2 km)
     expect(htmlWeekend).toContain("Total travel: 30 mins (5.2 km)");

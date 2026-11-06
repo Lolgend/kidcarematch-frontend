@@ -32,6 +32,8 @@ export function createOnboardingController({
   let currentSessionId = 0;
   let currentUser = null;
   let sessionUid = null;
+  let loadedSessionId = null;
+  let saveInProgress = false;
 
   let state = {
     status: 'guest',
@@ -40,6 +42,7 @@ export function createOnboardingController({
     profileName: DEFAULT_PROFILE_NAME,
     draft: null,
     error: null,
+    errorStage: null,
     isFirstSave: false,
   };
 
@@ -83,6 +86,8 @@ export function createOnboardingController({
     currentSessionId += 1;
     currentUser = null;
     sessionUid = null;
+    loadedSessionId = null;
+    saveInProgress = false;
     emit({
       status: 'guest',
       profile: null,
@@ -90,6 +95,7 @@ export function createOnboardingController({
       profileName: DEFAULT_PROFILE_NAME,
       draft: null,
       error: null,
+      errorStage: null,
       isFirstSave: false,
     });
   };
@@ -100,14 +106,21 @@ export function createOnboardingController({
       return;
     }
 
-    // Deduplicate duplicate concurrent auth callbacks for the same user while loading or ready
-    if (currentUser?.uid === user.uid && (state.status === 'loading' || state.status === 'ready')) {
+    // Ignore repeated auth callbacks once this identity has a stable state. Explicit profile-load
+    // retries remain available, and verification-required may advance after email verification.
+    if (
+      currentUser?.uid === user.uid &&
+      state.status !== 'verification-required' &&
+      !(state.status === 'error' && state.errorStage === 'load')
+    ) {
       return;
     }
 
     const sessionId = ++currentSessionId;
     currentUser = user;
     sessionUid = user.uid;
+    loadedSessionId = null;
+    saveInProgress = false;
 
     const isGoogle =
       user.providerId === 'google.com' ||
@@ -123,6 +136,7 @@ export function createOnboardingController({
         profileName: DEFAULT_PROFILE_NAME,
         draft: null,
         error: null,
+        errorStage: null,
         isFirstSave: false,
       });
       return;
@@ -135,6 +149,7 @@ export function createOnboardingController({
       profileName: DEFAULT_PROFILE_NAME,
       draft: null,
       error: null,
+      errorStage: null,
       isFirstSave: false,
     });
 
@@ -152,6 +167,7 @@ export function createOnboardingController({
           profileName: DEFAULT_PROFILE_NAME,
           draft: null,
           error: err?.message || String(err),
+          errorStage: 'load',
           isFirstSave: false,
         });
         return;
@@ -166,6 +182,7 @@ export function createOnboardingController({
           profileName: DEFAULT_PROFILE_NAME,
           draft: null,
           error: null,
+          errorStage: null,
           isFirstSave: false,
         });
         return;
@@ -187,6 +204,7 @@ export function createOnboardingController({
         profileName: DEFAULT_PROFILE_NAME,
         draft: draft || null,
         error: err?.message || String(err),
+        errorStage: 'load',
         isFirstSave: false,
       });
       return;
@@ -201,8 +219,10 @@ export function createOnboardingController({
         profileName: DEFAULT_PROFILE_NAME,
         draft: draft || null,
         error: null,
+        errorStage: null,
         isFirstSave: false,
       });
+      loadedSessionId = sessionId;
       return;
     }
 
@@ -219,6 +239,7 @@ export function createOnboardingController({
         profileName,
         draft: null,
         error: null,
+        errorStage: null,
         isFirstSave: false,
       });
     } else {
@@ -229,13 +250,16 @@ export function createOnboardingController({
         profileName,
         draft: profileObj,
         error: null,
+        errorStage: null,
         isFirstSave: false,
       });
     }
+    loadedSessionId = sessionId;
   };
 
   const save = async (form) => {
-    if (!currentUser || !sessionUid) return;
+    if (!currentUser || !sessionUid || saveInProgress) return;
+    if (loadedSessionId !== currentSessionId || !['required', 'ready', 'error'].includes(state.status) || (state.status === 'error' && state.errorStage !== 'save')) return;
 
     const saveSessionId = currentSessionId;
     const activeUid = sessionUid;
@@ -247,16 +271,19 @@ export function createOnboardingController({
         status: 'required',
         draft: form,
         error: validationErrors[0],
+        errorStage: null,
         isFirstSave: false,
       });
       return;
     }
 
     persistDraft(activeUid, form);
+    saveInProgress = true;
     emit({
       status: 'saving',
       draft: form,
       error: null,
+      errorStage: null,
       isFirstSave: false,
     });
 
@@ -271,14 +298,17 @@ export function createOnboardingController({
       if (saveSessionId !== currentSessionId) return;
     } catch (err) {
       if (saveSessionId !== currentSessionId) return;
+      saveInProgress = false;
       emit({
         status: 'error',
         draft: form,
         error: err?.message || String(err),
+        errorStage: 'save',
         isFirstSave: false,
       });
       return;
     }
+    saveInProgress = false;
 
     const savedProfile = fromApiProfile(result, form);
     const resolvedProfileId =
@@ -296,6 +326,7 @@ export function createOnboardingController({
         profileName: resolvedProfileName,
         draft: null,
         error: null,
+        errorStage: null,
         isFirstSave: wasFirstSave,
       });
     } else {
@@ -306,6 +337,7 @@ export function createOnboardingController({
         profileName: resolvedProfileName,
         draft: savedProfile,
         error: 'Saved profile is incomplete.',
+        errorStage: null,
         isFirstSave: false,
       });
     }

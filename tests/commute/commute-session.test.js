@@ -160,6 +160,22 @@ describe("createCommuteSession controller", () => {
     expect(states[states.length - 1].data.mode).toBe("walk");
   });
 
+  it("clears route data and reloads when saved profile locations change", async () => {
+    let resolveUpdated;
+    loadCommute = vi.fn()
+      .mockResolvedValueOnce(mockCommute(101))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveUpdated = resolve; }));
+    session = createCommuteSession({ loadCommute, onState: (s) => states.push(s) });
+    await session.open({ centreId: 101, profileId: "prof-1", locationKey: "654321:" });
+    const changed = session.open({ centreId: 101, profileId: "prof-1", locationKey: "123456:" });
+    expect(states.at(-1).data).toBe(null);
+    expect(states.at(-1).loading).toBe(true);
+    resolveUpdated(mockCommute(101));
+    await changed;
+    expect(states.at(-1).data.centre_id).toBe(101);
+    expect(session.getMode()).toBe("drive");
+  });
+
   it("handles request failure and allows retry", async () => {
     loadCommute = vi
       .fn()
