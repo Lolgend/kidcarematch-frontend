@@ -292,6 +292,7 @@ export function CentreCommuteView({
             <MapContainer
               center={mapCoordinates[0]}
               zoom={13}
+              zoomAnimation={false}
               scrollWheelZoom={false}
               style={{ height: "100%", width: "100%" }}
             >

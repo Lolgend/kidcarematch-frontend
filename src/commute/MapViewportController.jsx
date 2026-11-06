@@ -8,17 +8,22 @@ export default function MapViewportController({ coordinates }) {
   useEffect(() => {
     const points = JSON.parse(serialized);
     if (!points.length) return undefined;
+    let disposed = false;
     const fit = () => {
+      if (disposed) return;
       map.invalidateSize({ pan: false });
-      if (points.length === 1) map.setView(points[0], 15);
-      else map.fitBounds(points, { padding: [24, 24], maxZoom: 15 });
+      if (points.length === 1) map.setView(points[0], 15, { animate: false });
+      else map.fitBounds(points, { padding: [24, 24], maxZoom: 15, animate: false });
     };
     fit();
     const container = map.getContainer();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(fit);
-    observer.observe(container);
-    return () => observer.disconnect();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+    observer?.observe(container);
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+      if (map._loaded && container.isConnected) map.stop();
+    };
   }, [map, serialized]);
 
   return null;

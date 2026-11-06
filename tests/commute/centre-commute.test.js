@@ -3,13 +3,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("react-leaflet", () => ({
-  MapContainer: ({ children, center, zoom, style }) =>
+  MapContainer: ({ children, center, zoom, style, zoomAnimation }) =>
     React.createElement(
       "div",
       {
         "data-testid": "mock-map-container",
         "data-center": JSON.stringify(center),
         "data-zoom": zoom,
+        "data-zoom-animation": zoomAnimation,
         style,
       },
       children
@@ -161,6 +162,7 @@ describe("CentreCommute presentation", () => {
     );
 
     expect(html).toContain("mock-map-container");
+    expect(html).toContain('data-zoom-animation="false"');
     expect(html).toContain("Home");
     expect(html).toContain("Star Preschool");
     expect(html).toContain('data-alt="Home"');

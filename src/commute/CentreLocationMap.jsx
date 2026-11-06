@@ -38,6 +38,7 @@ export function CentreLocationMapView({
           <MapContainer
             center={[coordinate.lat, coordinate.lng]}
             zoom={15}
+            zoomAnimation={false}
             scrollWheelZoom={false}
             style={{ height: "100%", width: "100%" }}
           >
