@@ -448,14 +448,18 @@ function App() {
   const requestedIds = useRef(new Set());
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
+  const [detailConfirmed, setDetailConfirmed] = useState(false);
   const detailRequestRef = useRef(0);
   const activeAccountIdRef = useRef(null);
+  const reviewsSectionRef = useRef(null);
   const [detailReviews, setDetailReviews] = useState([]);
   const [detailReviewsLoading, setDetailReviewsLoading] = useState(false);
   const [detailReviewsError, setDetailReviewsError] = useState('');
   const [myCentreReview, setMyCentreReview] = useState(null);
   const [myReviewLoading, setMyReviewLoading] = useState(false);
   const [myReviewError, setMyReviewError] = useState('');
+  const [myReviewKnown, setMyReviewKnown] = useState(false);
+  const myReviewBaselineRef = useRef(null);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState('');
   const [reviewSaving, setReviewSaving] = useState(false);
@@ -666,14 +670,18 @@ function App() {
         setSelectedCentre(null);
         setDetailLoading(false);
         setDetailError('');
+        setDetailConfirmed(false);
         setDetailReviews([]);
         setDetailReviewsLoading(false);
         setDetailReviewsError('');
         setMyCentreReview(null);
         setMyReviewLoading(false);
         setMyReviewError('');
+        setMyReviewKnown(false);
+        myReviewBaselineRef.current = null;
         setReviewRating(5);
         setReviewComment('');
+        setReviewSaving(false);
       }
 
       setCurrentUser(user);
@@ -874,17 +882,24 @@ function App() {
     setSelectedCentre(centre);
     setDetailLoading(true);
     setDetailError('');
+    setDetailConfirmed(false);
     setDetailReviews([]);
     setDetailReviewsLoading(true);
     setDetailReviewsError('');
     setMyCentreReview(null);
     setMyReviewLoading(Boolean(currentUser));
     setMyReviewError('');
+    setMyReviewKnown(false);
+    myReviewBaselineRef.current = null;
     setReviewRating(5);
     setReviewComment('');
+    setReviewSaving(false);
     const requestId = String(centre.id);
     const loadDetails = getCentreById(centre.id).then((detail) => {
-      if (requestGeneration === detailRequestRef.current) setSelectedCentre((current) => String(current?.id) === requestId ? mapCentre({ ...centre, ...detail }) : current);
+      if (requestGeneration === detailRequestRef.current) {
+        setSelectedCentre((current) => String(current?.id) === requestId ? mapCentre({ ...centre, ...detail }) : current);
+        setDetailConfirmed(true);
+      }
     }).catch((error) => {
       if (requestGeneration === detailRequestRef.current) setDetailError(error.message?.includes('404') ? 'Centre not found' : 'Centre details could not be loaded. Try again.');
     }).finally(() => { if (requestGeneration === detailRequestRef.current) setDetailLoading(false); });
@@ -897,25 +912,53 @@ function App() {
     });
     const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
     if (currentUser && centreViewerReady) {
-      getMyReview(centre.id).then((mine) => {
-        if (requestGeneration !== detailRequestRef.current) return;
-        setMyCentreReview(mine);
-        if (mine) {
-          setReviewRating(Number(mine.rating) || 5);
-          setReviewComment(mine.review_description || '');
-        }
-      }).catch(() => {
-        if (requestGeneration === detailRequestRef.current) setMyReviewError('Your review could not be loaded. Retry before writing a review.');
-      }).finally(() => {
-        if (requestGeneration === detailRequestRef.current) setMyReviewLoading(false);
-      });
+      loadOwnCentreReview(centre.id, requestGeneration);
     } else {
       setMyReviewLoading(false);
     }
     return loadDetails;
   };
 
+  const loadOwnCentreReview = async (centreId, requestGeneration = detailRequestRef.current) => {
+    const accountId = currentUser?.uid == null ? null : String(currentUser.uid);
+    const requestIsCurrent = () => requestGeneration === detailRequestRef.current && accountId === activeAccountIdRef.current;
+    setMyReviewLoading(true);
+    setMyReviewError('');
+    setMyReviewKnown(false);
+    try {
+      const mine = await getMyReview(centreId);
+      if (!requestIsCurrent()) return;
+      if (!mine || typeof mine !== 'object' || !mine.review_id) {
+        throw new Error('Your review could not be confirmed. Retry before writing a review.');
+      }
+      const baseline = {
+        centreId: String(centreId),
+        rating: Number(mine.rating) || 5,
+        comment: mine.review_description || '',
+      };
+      myReviewBaselineRef.current = baseline;
+      setMyCentreReview(mine);
+      setReviewRating(baseline.rating);
+      setReviewComment(baseline.comment);
+      setMyReviewKnown(true);
+    } catch (error) {
+      if (!requestIsCurrent()) return;
+      if (error.status === 404 && error.message === '404: Review not found') {
+        myReviewBaselineRef.current = { centreId: String(centreId), rating: 5, comment: '' };
+        setMyCentreReview(null);
+        setReviewRating(5);
+        setReviewComment('');
+        setMyReviewKnown(true);
+      } else {
+        setMyReviewError('Your review could not be loaded. Retry before writing a review.');
+      }
+    } finally {
+      if (requestIsCurrent()) setMyReviewLoading(false);
+    }
+  };
+
   const openCentreDetails = (centre) => {
+    if (!confirmReviewDeparture()) return;
     const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
     if (currentUser && !centreViewerReady) {
       notify('Please complete your family profile to access centre details.');
@@ -955,31 +998,64 @@ function App() {
       notify('Please sign in before submitting a review.');
       return;
     }
-    if (!selectedCentre?.id || reviewSaving) return;
+    if (!selectedCentre?.id || reviewSaving || !myReviewKnown || myReviewLoading || myReviewError || detailLoading || !detailConfirmed) return;
 
+    const requestGeneration = detailRequestRef.current;
+    const accountId = currentUser?.uid == null ? null : String(currentUser.uid);
+    const centreId = String(selectedCentre.id);
+    const wasEditing = Boolean(myCentreReview?.review_id);
+    const requestIsCurrent = () => requestGeneration === detailRequestRef.current && accountId === activeAccountIdRef.current && String(selectedCentre?.id) === centreId;
     setReviewSaving(true);
     const payload = {
       rating: Number(reviewRating),
       review_description: reviewComment.trim() || null
     };
     try {
-      const savedReview = myCentreReview?.review_id
+      const savedReview = wasEditing
         ? await updateReview(myCentreReview.review_id, payload)
         : await submitReview(selectedCentre.id, payload);
+      if (!requestIsCurrent()) return;
       setMyCentreReview(savedReview);
-      const [reviewData, detail] = await Promise.all([
-        getCentreReviews(selectedCentre.id),
-        getCentreById(selectedCentre.id)
+      setMyReviewKnown(true);
+      myReviewBaselineRef.current = {
+        centreId,
+        rating: Number(savedReview.rating) || Number(reviewRating) || 5,
+        comment: savedReview.review_description ?? reviewComment,
+      };
+      setReviewRating(myReviewBaselineRef.current.rating);
+      setReviewComment(myReviewBaselineRef.current.comment);
+      notify(wasEditing ? 'Your review has been updated.' : 'Thank you for sharing your review!');
+      requestAnimationFrame(() => {
+        reviewsSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        reviewsSectionRef.current?.focus({ preventScroll: true });
+      });
+
+      const [reviewResult, centreResult] = await Promise.allSettled([
+        getCentreReviews(centreId),
+        getCentreById(centreId),
       ]);
-      setDetailReviews(reviewData?.items || []);
-      setSelectedCentre(mapCentre({ ...selectedCentre, ...detail }));
-      notify(myCentreReview ? 'Your review has been updated.' : 'Thank you for sharing your review!');
+      if (requestIsCurrent()) {
+        if (reviewResult.status === 'fulfilled') {
+          setDetailReviews(reviewResult.value?.items || []);
+          setDetailReviewsError('');
+        } else {
+          setDetailReviewsError('Published reviews could not be refreshed after saving. Retry reviews.');
+        }
+        if (centreResult.status === 'fulfilled') {
+          setSelectedCentre((current) => String(current?.id) === centreId ? mapCentre({ ...current, ...centreResult.value }) : current);
+          setDetailError('');
+        } else {
+          setDetailError('Centre details could not be refreshed after saving. Try again.');
+        }
+      }
     } catch (error) {
-      notify(error.message?.includes('409')
-        ? 'You have already reviewed this centre. Reopen the details to edit your review.'
-        : `Could not save your review: ${error.message}`);
+      if (requestIsCurrent()) {
+        notify(error.message?.includes('409')
+          ? 'You have already reviewed this centre. Reload your review before editing it.'
+          : `Could not save your review: ${error.message}`);
+      }
     } finally {
-      setReviewSaving(false);
+      if (requestGeneration === detailRequestRef.current && accountId === activeAccountIdRef.current) setReviewSaving(false);
     }
   };
 
@@ -988,6 +1064,24 @@ function App() {
     currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
   const isOnboardingGated =
     Boolean(currentUser) && onboardingState.status !== 'ready' && !isAdmin;
+
+  const reviewBaseline = myReviewBaselineRef.current;
+  const reviewIsDirty = Boolean(
+    selectedCentre?.id && currentUser && detailConfirmed && myReviewKnown && !myReviewLoading && !myReviewError &&
+    reviewBaseline?.centreId === String(selectedCentre.id) &&
+    (Number(reviewRating) !== reviewBaseline.rating || reviewComment !== reviewBaseline.comment)
+  );
+  const confirmReviewDeparture = () => !reviewIsDirty || window.confirm('Discard your unsaved review changes?');
+
+  useEffect(() => {
+    if (!reviewIsDirty) return undefined;
+    const protectDocumentDeparture = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', protectDocumentDeparture);
+    return () => window.removeEventListener('beforeunload', protectDocumentDeparture);
+  }, [reviewIsDirty]);
 
   useEffect(() => {
     if (selectedCentre && !detailLoading && !isOnboardingGated) centreHeadingRef.current?.focus();
@@ -1001,6 +1095,7 @@ function App() {
   }, [isOnboardingGated]);
 
   const openPage = (nextPage) => {
+    if (!confirmReviewDeparture()) return;
     if (isOnboardingGated) {
       notify('Please complete your family profile to access this feature.');
       setMobileOpen(false);
@@ -2714,6 +2809,7 @@ function App() {
           <div className="centre-details-inner">
             <a className="centre-details-return" href="/" onClick={(event) => {
               event.preventDefault();
+              if (!confirmReviewDeparture()) return;
               const returnPath = window.history.state?.centreDetails ? window.history.state.returnPath : null;
               window.history.replaceState({}, '', returnPath || '/');
               setSelectedCentre(null);
@@ -2777,7 +2873,7 @@ function App() {
                     <p><b>Transport</b>{selectedCentre.transport_provided ? 'Available' : 'Not listed'}</p>
                   </aside>
                 </div>
-                <section className="parent-reviews" aria-labelledby="parent-reviews-title">
+                <section className="parent-reviews" aria-labelledby="parent-reviews-title" ref={reviewsSectionRef} tabIndex="-1">
                   <div className="parent-reviews-heading">
                     <div>
                       <span className="review-eyebrow">PARENT VOICES</span>
@@ -2857,12 +2953,14 @@ function App() {
                       <MessageCircleIcon />
                     </div>
                     {currentUser ? (
-                      myReviewLoading ? <p role="status">Loading your review…</p> : myReviewError ? (
+                      myReviewLoading || detailLoading ? <p role="status">Loading your review…</p> : myReviewError || !detailConfirmed ? (
                         <div role="alert" className="reviews-empty-state">
-                          <p>{myReviewError}</p>
-                          <button className="secondary-btn" type="button" onClick={() => loadCentreDetails(selectedCentre)}>Retry your review</button>
+                          <p>{myReviewError || 'Confirm the centre details before writing a review.'}</p>
+                          {myReviewError
+                            ? <button className="secondary-btn" type="button" onClick={() => loadOwnCentreReview(selectedCentre.id)}>Retry your review</button>
+                            : <button className="secondary-btn" type="button" onClick={() => loadCentreDetails(selectedCentre)}>Retry centre details</button>}
                         </div>
-                      ) : <form className="parent-review-form" onSubmit={handleReviewSubmit}>
+                      ) : !myReviewKnown ? <p role="status">Confirming your review eligibility…</p> : <form className="parent-review-form" onSubmit={handleReviewSubmit}>
                         <label>How would you rate this preschool?</label>
                         <div className="rating-picker" role="radiogroup" aria-label="Choose a rating from one to five stars">
                           {[1, 2, 3, 4, 5].map((star) => (
