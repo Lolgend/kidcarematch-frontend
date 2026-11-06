@@ -171,7 +171,7 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("10 mins");
     expect(html).toContain("5.0 km");
     expect(html).toContain("Total travel: 10 mins (5.0 km)");
-    expect(html).toContain("Excludes time spent at the centre");
+    expect(html).toContain("child drop-off time is excluded");
   });
 
   it("renders two-leg driving commute with distinct line styles and combined totals", () => {
@@ -259,7 +259,7 @@ describe("CentreCommute presentation", () => {
               source: "onemap",
               duration_seconds: 600,
               distance_meters: 5000,
-              geometry: [{ lat: 1.3, lng: 103.8 }],
+              geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }],
             },
             {
               from_anchor: "centre",
@@ -328,8 +328,33 @@ describe("CentreCommute presentation", () => {
       })
     );
 
-    expect(html).toContain("Home postal code could not be resolved");
+    expect(html).toContain("Your saved home location could not be resolved");
     expect(html).toContain("Edit family profile");
+  });
+
+  it("distinguishes an unresolved configured workplace from a profile with no workplace", () => {
+    const data = {
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 }, workplace: null },
+      samples: [{ kind: "single", legs: [
+        { from_anchor: "home", to_anchor: "centre", status: "available", duration_seconds: 600, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }] },
+        { from_anchor: "centre", to_anchor: "workplace", status: "unavailable", duration_seconds: null, distance_meters: null, message: "Workplace could not be resolved" },
+      ], totals: null }],
+    };
+    const unresolved = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "p1", workplaceConfigured: true,
+      centre: { id: 101 }, data, loading: false,
+    }));
+    const homeOnly = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "p1", workplaceConfigured: false,
+      centre: { id: 101 }, data, loading: false,
+    }));
+
+    expect(unresolved).toContain("Your configured workplace location could not be resolved");
+    expect(unresolved).toContain("Edit family profile");
+    expect(unresolved).toContain("Extra travel comparison isn’t available yet");
+    expect(unresolved).not.toContain("Home to centre only; no workplace is configured");
+    expect(homeOnly).toContain("Home to centre only; no workplace is configured");
+    expect(homeOnly).not.toContain("Your configured workplace location could not be resolved");
   });
 
   it("renders travel mode selector with Driving, Public transport, Walking, and Cycling radio controls", () => {
@@ -370,7 +395,7 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("Public transport");
   });
 
-  it("renders representative weekday label with sample date and 08:00 SGT assumption for PT mode", () => {
+  it("renders one estimate for PT without exposing sample dates or times", () => {
     const data = {
       centre_id: 101,
       profile_id: "prof-1",
@@ -391,7 +416,7 @@ describe("CentreCommute presentation", () => {
               source: "onemap",
               duration_seconds: 1500,
               distance_meters: 5000,
-              geometry: [{ lat: 1.3, lng: 103.8 }],
+              geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }],
               transit_legs: [
                 {
                   mode: "WALK",
@@ -431,11 +456,55 @@ describe("CentreCommute presentation", () => {
       })
     );
 
-    expect(html).toContain("Representative Wednesday 08:00 SGT");
-    expect(html).toContain("11 Nov 2026");
+    expect(html).not.toContain("Wednesday");
+    expect(html).not.toContain("08:00");
+    expect(html).not.toContain("11 Nov 2026");
+    expect(html).not.toContain("Representative travel day");
+    expect(html).toContain("Estimated travel time");
+    expect(html).toContain("Actual journeys may vary");
+    expect(html).toContain("child drop-off time is excluded");
     expect(html).toContain("25 mins");
     expect(html).toContain("5.0 km");
     expect(html).toContain("Total travel: 25 mins (5.0 km)");
+  });
+
+  it("does not substitute a weekend route or expose provider timing diagnostics when the PT weekday is missing", () => {
+    const html = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "p1", centre: { id: 101 }, mode: "pt", loading: false,
+      data: {
+        anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 } },
+        samples: [{ kind: "weekend", sampled_at: "2026-11-14T08:00:00+08:00", legs: [{
+          from_anchor: "home", to_anchor: "centre", status: "available", duration_seconds: 600,
+          distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }],
+          message: "No route on Wednesday 11 Nov at 08:00", transit_legs: [{ mode: "BUS", route: "159", instruction: "Arrive Wednesday 11 Nov at 08:00" }],
+        }], totals: { duration_seconds: 600, distance_meters: 5000 } }],
+      },
+    }));
+
+    expect(html).toContain("Public transport estimate unavailable");
+    expect(html).toContain("Retry route");
+    expect(html).not.toContain("Total travel:");
+    expect(html).not.toContain("14 Nov");
+    expect(html).not.toContain("Wednesday");
+    expect(html).not.toContain("08:00");
+    expect(html).not.toContain("Arrive");
+  });
+
+  it("withholds totals for negative metrics and legs in the wrong order", () => {
+    const data = {
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 }, workplace: { lat: 1.28, lng: 103.85 } },
+      samples: [{ kind: "single", legs: [
+        { from_anchor: "centre", to_anchor: "workplace", status: "available", duration_seconds: 600, distance_meters: 5000, geometry: [{ lat: 1.35, lng: 103.85 }, { lat: 1.28, lng: 103.85 }] },
+        { from_anchor: "home", to_anchor: "centre", status: "available", duration_seconds: -1, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }] },
+      ], totals: { duration_seconds: 599, distance_meters: 10000 } }],
+    };
+    const html = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "p1", workplaceConfigured: true,
+      centre: { id: 101 }, data, loading: false,
+    }));
+
+    expect(html).not.toContain("Total travel:");
+    expect(html).toContain("Complete journey totals unavailable");
   });
 
   it("displays walking and transit legs in the route breakdown", () => {
@@ -459,7 +528,7 @@ describe("CentreCommute presentation", () => {
               source: "onemap",
               duration_seconds: 1500,
               distance_meters: 5000,
-              geometry: [{ lat: 1.3, lng: 103.8 }],
+              geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }],
               transit_legs: [
                 {
                   mode: "WALK",
@@ -524,7 +593,7 @@ describe("CentreCommute presentation", () => {
               source: "onemap",
               duration_seconds: 1500,
               distance_meters: 5000,
-              geometry: [{ lat: 1.3, lng: 103.8 }],
+              geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }],
               transit_legs: [
                 {
                   mode: "WALK",
@@ -621,7 +690,7 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("45 mins");
     expect(html).toContain("3.5 km");
     expect(html).toContain("Total travel: 45 mins (3.5 km)");
-    expect(html).toContain("Excludes time spent at the centre");
+    expect(html).toContain("child drop-off time is excluded");
     expect(html).toContain('aria-pressed="true" class="commute-mode-btn active">Walking');
   });
 
@@ -759,7 +828,7 @@ describe("CentreCommute presentation", () => {
               source: "onemap",
               duration_seconds: 600,
               distance_meters: 3000,
-              geometry: [{ lat: 1.3, lng: 103.8 }],
+              geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }],
             },
             {
               from_anchor: "centre",
@@ -795,7 +864,7 @@ describe("CentreCommute presentation", () => {
     expect(html).toContain("Retry route");
   });
 
-  it("renders Weekday and Weekend summary tabs with sample dates, times, and disclaimer for PT mode", () => {
+  it("uses only the weekday sample from unequal legacy PT samples", () => {
     const data = {
       centre_id: 101,
       profile_id: "prof-1",
@@ -859,21 +928,10 @@ describe("CentreCommute presentation", () => {
       })
     );
 
-    // Tabs
-    expect(html).toContain('role="group" aria-label="Representative travel day"');
-    expect(html).toContain('aria-pressed="true" class="commute-sample-tab active"');
-    expect(html).toContain('aria-pressed="false" class="commute-sample-tab "');
-    expect(html).toContain("Weekday");
-    expect(html).toContain("Weekend");
-    expect(html).toContain("11 Nov 08:00");
-    expect(html).toContain("14 Nov 08:00");
-    expect(html).toContain("25 mins");
-    expect(html).toContain("30 mins");
-
-    // Disclaimer
-    expect(html).toContain(
-      "Representative conditions at 08:00 SGT (not all-day averages or traffic guarantees)"
-    );
+    expect(html).not.toContain('aria-label="Representative travel day"');
+    expect(html).not.toContain("11 Nov");
+    expect(html).not.toContain("14 Nov");
+    expect(html).not.toContain("30 mins (5.0 km)");
 
     // Weekday metrics & geometry
     expect(html).toContain("Total travel: 25 mins (5.0 km)");
@@ -885,7 +943,7 @@ describe("CentreCommute presentation", () => {
     );
   });
 
-  it("switches displayed route geometry, per-leg metrics, and totals when weekend sample is selected", () => {
+  it("does not switch to the legacy weekend sample", () => {
     const data = {
       centre_id: 101,
       profile_id: "prof-1",
@@ -949,26 +1007,9 @@ describe("CentreCommute presentation", () => {
       })
     );
 
-    // Weekend tab is selected
-    expect(htmlWeekend).toContain('aria-pressed="true" class="commute-sample-tab active"');
-    expect(htmlWeekend).toContain('aria-pressed="false" class="commute-sample-tab "');
-
-    // Weekend numbers: 30 mins (5.2 km)
-    expect(htmlWeekend).toContain("Total travel: 30 mins (5.2 km)");
-
-    // Weekend geometry on map
-    expect(htmlWeekend).toContain(
-      JSON.stringify([
-        [1.3, 103.8],
-        [1.39, 103.89],
-      ])
-    );
-    expect(htmlWeekend).not.toContain(
-      JSON.stringify([
-        [1.3, 103.8],
-        [1.31, 103.81],
-      ])
-    );
+    expect(htmlWeekend).not.toContain("30 mins (5.2 km)");
+    expect(htmlWeekend).toContain("Total travel: 25 mins (5.0 km)");
+    expect(htmlWeekend).not.toContain("14 Nov");
   });
 
   it("handles independent weekend leg failure while weekday succeeds", () => {
@@ -993,7 +1034,7 @@ describe("CentreCommute presentation", () => {
               source: "onemap",
               duration_seconds: 1500,
               distance_meters: 5000,
-              geometry: [{ lat: 1.3, lng: 103.8 }],
+              geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }],
             },
           ],
           totals: { duration_seconds: 1500, distance_meters: 5000 },
@@ -1044,10 +1085,8 @@ describe("CentreCommute presentation", () => {
         data,
       })
     );
-    expect(htmlWeekend).not.toContain("Total travel: 25 mins");
-    expect(htmlWeekend).toContain("Route unavailable for Home → Centre");
-    expect(htmlWeekend).toContain("Complete journey totals unavailable");
-    expect(htmlWeekend).toContain("Retry route");
+    expect(htmlWeekend).toContain("Total travel: 25 mins (5.0 km)");
+    expect(htmlWeekend).not.toContain("Complete journey totals unavailable");
   });
 
   it("does not render weekday/weekend tabs for modes with single estimate (drive, walk, cycle)", () => {
@@ -1071,7 +1110,7 @@ describe("CentreCommute presentation", () => {
                 source: "onemap",
                 duration_seconds: 600,
                 distance_meters: 5000,
-                geometry: [{ lat: 1.3, lng: 103.8 }],
+                geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }],
               },
             ],
             totals: { duration_seconds: 600, distance_meters: 5000 },

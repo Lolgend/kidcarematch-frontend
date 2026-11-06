@@ -219,6 +219,8 @@ export function createCommuteSession({
       if (mode === newMode) return;
       mode = newMode;
       setSessionMode(userId, newMode);
+      data = null;
+      error = null;
       if (centreId && profileId) {
         await executeRequest();
       } else {

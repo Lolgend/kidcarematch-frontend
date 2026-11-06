@@ -2736,6 +2736,7 @@ function App() {
                         centre={selectedCentre}
                         currentUser={currentUser}
                         profileId={profileId}
+                        workplaceConfigured={profile ? Boolean(profile.work) : undefined}
                         profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
                         onSignIn={() => setAuthMode('login')}
                         onEditProfile={() => openPage('Family profile')}

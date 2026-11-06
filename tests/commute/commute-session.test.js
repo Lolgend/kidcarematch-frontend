@@ -150,8 +150,11 @@ describe("createCommuteSession controller", () => {
     });
 
     const pDrive = session.open({ centreId: 101, profileId: "prof-1" });
-    await session.setMode("walk");
+    const pWalk = session.setMode("walk");
 
+    expect(states.at(-1).loading).toBe(true);
+    expect(states.at(-1).data).toBe(null);
+    await pWalk;
     expect(states[states.length - 1].data.mode).toBe("walk");
 
     resolveDrive(mockCommute(101, "drive"));
