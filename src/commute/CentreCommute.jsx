@@ -26,55 +26,34 @@ export function formatDistance(meters) {
   return `${km} km`;
 }
 
-export function formatSampleDate(isoString) {
-  if (!isoString) return "";
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString("en-SG", {
-      timeZone: "Asia/Singapore",
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return "";
-  }
+function hasNonnegativeMetric(value) {
+  return Number.isFinite(value) && value >= 0;
 }
 
-export function formatSampleDateTime(isoString) {
-  if (!isoString) return "";
-  try {
-    const d = new Date(isoString);
-    const datePart = d.toLocaleDateString("en-SG", {
-      timeZone: "Asia/Singapore",
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-    });
-    const timePart = d.toLocaleTimeString("en-SG", {
-      timeZone: "Asia/Singapore",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-    return `${datePart} ${timePart}`;
-  } catch {
-    return "";
-  }
+function hasUsableGeometry(leg) {
+  return Array.isArray(leg?.geometry) && leg.geometry.length >= 2 && leg.geometry.every(
+    (point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lng)
+  );
+}
+
+function isUsableRouteLeg(leg) {
+  return leg?.status === "available" &&
+    hasNonnegativeMetric(leg.duration_seconds) &&
+    hasNonnegativeMetric(leg.distance_meters) &&
+    hasUsableGeometry(leg);
 }
 
 export function CentreCommuteView({
   currentUser,
   profileId,
+  workplaceConfigured,
   centre,
   centreName = centre?.name || centre?.centre_name,
   loading,
   error,
   data,
   mode = "drive",
-  selectedSample = "weekday",
   onModeChange,
-  onSelectSample,
   onRetry,
   onSignIn,
   onEditProfile,
@@ -118,40 +97,52 @@ export function CentreCommuteView({
 
   // 3. Parents with saved profile
   const samples = Array.isArray(data?.samples) ? data.samples : [];
-  const weekdaySample = samples.find((s) => s.kind === "weekday") || null;
-  const weekendSample = samples.find((s) => s.kind === "weekend") || null;
-  const isDateDependent = Boolean(weekdaySample && weekendSample);
-
-  const currentSampleKind = isDateDependent
-    ? (selectedSample === "weekend" ? "weekend" : "weekday")
-    : (samples[0]?.kind || "single");
-
-  const sample = isDateDependent
-    ? (currentSampleKind === "weekend" ? weekendSample : weekdaySample)
-    : (samples[0] || null);
-
-  const legs = sample?.legs || [];
+  const sample = mode === "pt"
+    ? samples.find((item) => item.kind === "weekday") || null
+    : samples[0] || null;
+  const currentSampleKind = sample?.kind || "single";
+  const hasConfiguredWorkplace = workplaceConfigured ?? Boolean(
+    data?.anchors?.workplace || sample?.legs?.some((leg) => leg.to_anchor === "workplace")
+  );
+  const legs = (sample?.legs || []).filter((leg) =>
+    hasConfiguredWorkplace || leg.to_anchor !== "workplace"
+  );
 
   // Check for unresolvable postal code messages
   const unresolvableLeg = legs.find(
     (l) => l.status === "unavailable" && l.message && l.message.toLowerCase().includes("could not be resolved")
   );
-  const homeUnresolvable =
-    data?.anchors?.home === null ||
+  const homeAnchor = data?.anchors?.home;
+  const hasHomeCoordinate = Number.isFinite(homeAnchor?.lat) && Number.isFinite(homeAnchor?.lng);
+  const workplaceAnchor = data?.anchors?.workplace;
+  const hasWorkplaceCoordinate = Number.isFinite(workplaceAnchor?.lat) && Number.isFinite(workplaceAnchor?.lng);
+  const homeUnresolvable = Boolean(data && !hasHomeCoordinate) ||
     (unresolvableLeg && unresolvableLeg.message.toLowerCase().includes("home"));
-  const workplaceUnresolvable =
-    data?.anchors?.workplace === null ||
-    (unresolvableLeg && unresolvableLeg.message.toLowerCase().includes("workplace"));
+  const workplaceUnresolvable = hasConfiguredWorkplace && (
+    !hasWorkplaceCoordinate ||
+    (unresolvableLeg && unresolvableLeg.message.toLowerCase().includes("workplace"))
+  );
 
   const unresolvableMessage = homeUnresolvable
-    ? "Home postal code could not be resolved on OneMap."
+    ? "Your saved home location could not be resolved. Edit your family profile to update it."
     : workplaceUnresolvable
-    ? "Workplace postal code could not be resolved on OneMap."
+    ? "Your configured workplace location could not be resolved. Edit your family profile to update it."
     : null;
+  const expectedLegs = hasConfiguredWorkplace
+    ? [["home", "centre"], ["centre", "workplace"]]
+    : [["home", "centre"]];
+  const hasExpectedLegs = legs.length === expectedLegs.length && legs.every((leg, index) =>
+    leg.from_anchor === expectedLegs[index][0] && leg.to_anchor === expectedLegs[index][1]
+  );
+  const hasCompleteTotals = Boolean(
+    hasExpectedLegs && legs.every(isUsableRouteLeg) &&
+    hasNonnegativeMetric(sample?.totals?.duration_seconds) &&
+    hasNonnegativeMetric(sample?.totals?.distance_meters)
+  );
 
   // Determine center coordinates for MapContainer
   const availableLegsWithGeometry = legs.filter(
-    (l) => l.status === "available" && Array.isArray(l.geometry) && l.geometry.length > 0
+    isUsableRouteLeg
   );
   const hasCentreCoordinate = Number.isFinite(data?.anchors?.centre?.lat) && Number.isFinite(data?.anchors?.centre?.lng);
   const mapCoordinates = hasCentreCoordinate ? [
@@ -212,7 +203,7 @@ export function CentreCommuteView({
         <>
           <CentreLocationMap centre={centre} currentUser={currentUser} getCentreLocation={getCentreLocation} />
           <div className="centre-map-unavailable" role="status">
-            <p>Could not load commute route. ({error.message || "Network error"})</p>
+            <p>{mode === "pt" ? "Could not load the public transport estimate." : "Could not load commute route."}</p>
             <button type="button" className="retry-route-btn" onClick={onRetry || undefined}>Retry route</button>
           </div>
         </>
@@ -233,58 +224,18 @@ export function CentreCommuteView({
             </div>
           )}
 
-          {/* Representative Weekday / Weekend summary selector tabs */}
-          {isDateDependent ? (
-            <div className="commute-sample-controls" aria-label="Representative travel conditions">
-              <div className="commute-sample-selector" role="group" aria-label="Representative travel day">
-                <button
-                  type="button"
-                  aria-pressed={currentSampleKind === "weekday"}
-                  className={`commute-sample-tab ${currentSampleKind === "weekday" ? "active" : ""}`}
-                  onClick={() => onSelectSample && onSelectSample("weekday")}
-                >
-                  <span className="sample-tab-title">Weekday</span>
-                  {weekdaySample?.sampled_at && (
-                    <span className="sample-tab-date">{formatSampleDateTime(weekdaySample.sampled_at)}</span>
-                  )}
-                  {weekdaySample?.totals ? (
-                    <span className="sample-tab-duration">
-                      {formatDuration(weekdaySample.totals.duration_seconds)}
-                    </span>
-                  ) : null}
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={currentSampleKind === "weekend"}
-                  className={`commute-sample-tab ${currentSampleKind === "weekend" ? "active" : ""}`}
-                  onClick={() => onSelectSample && onSelectSample("weekend")}
-                >
-                  <span className="sample-tab-title">Weekend</span>
-                  {weekendSample?.sampled_at && (
-                    <span className="sample-tab-date">{formatSampleDateTime(weekendSample.sampled_at)}</span>
-                  )}
-                  {weekendSample?.totals ? (
-                    <span className="sample-tab-duration">
-                      {formatDuration(weekendSample.totals.duration_seconds)}
-                    </span>
-                  ) : null}
-                </button>
-              </div>
-              <div className="commute-sample-disclaimer" role="note">
-                <small>
-                  Representative conditions at 08:00 SGT (not all-day averages or traffic guarantees).
-                </small>
-              </div>
+          <p className="commute-estimate-note" role="note">Estimated travel time. Actual journeys may vary.</p>
+          {!hasConfiguredWorkplace && (
+            <p className="commute-estimate-note" role="note">Home to centre only; no workplace is configured in your saved profile.</p>
+          )}
+          {hasConfiguredWorkplace && (
+            <p className="commute-estimate-note" role="note">Extra travel comparison isn’t available yet.</p>
+          )}
+          {mode === "pt" && !sample && (
+            <div className="commute-totals-unavailable" role="status">
+              <span>Public transport estimate unavailable.</span>
+              <button type="button" className="retry-route-btn" onClick={onRetry || undefined}>Retry route</button>
             </div>
-          ) : (
-            sample?.kind === "weekday" && (
-              <div className="commute-sample-label" role="note" aria-label="Sample conditions">
-                <span className="commute-sample-badge">Representative Wednesday 08:00 SGT</span>
-                {sample.sampled_at && (
-                  <span className="commute-sample-date"> ({formatSampleDate(sample.sampled_at)})</span>
-                )}
-              </div>
-            )
           )}
 
           {/* Map display */}
@@ -339,11 +290,12 @@ export function CentreCommuteView({
           </div> : <div className="centre-map-unavailable" role="status">Map view is currently unavailable for this centre.</div>}
 
           {/* Readable text breakdown */}
-          <div className="commute-breakdown" id="centre-commute-summary" tabIndex={-1} aria-label="Journey breakdown">
+          {sample && <div className="commute-breakdown" id="centre-commute-summary" tabIndex={-1} aria-label="Journey breakdown">
             {legs.map((leg, idx) => {
               const isLeg1 = leg.from_anchor === "home";
               const legTitle = isLeg1 ? "Leg 1: Home → Centre" : "Leg 2: Centre → Workplace";
-              const isAvailable = leg.status === "available" && leg.duration_seconds !== null;
+              const matchesExpectedLeg = leg.from_anchor === expectedLegs[idx]?.[0] && leg.to_anchor === expectedLegs[idx]?.[1];
+              const isAvailable = matchesExpectedLeg && isUsableRouteLeg(leg);
 
               return (
                 <div key={idx} className="commute-leg-item">
@@ -372,20 +324,15 @@ export function CentreCommuteView({
                     <div className="commute-transit-legs" aria-label="Transit segments">
                       {leg.transit_legs.map((sub, sIdx) => {
                         const isWalk = sub.mode === "WALK";
-                        const subTitle = isWalk
-                          ? "Walk"
-                          : sub.route
-                          ? `Transit (${sub.route})`
-                          : "Transit";
+                        const route = typeof sub.route === "string" ? sub.route.trim() : "";
+                        const safeRouteId = /^(?:[A-Z]{1,3}\d{1,4}|\d{1,4}[A-Z]?)$/i.test(route);
+                        const subTitle = isWalk ? "Walk" : safeRouteId ? `Transit (${route})` : "Transit";
                         return (
                           <div key={sIdx} className="commute-transit-subleg">
                             <span className="commute-subleg-type">{subTitle}: </span>
                             <span className="commute-subleg-metrics">
                               {formatDuration(sub.duration_seconds)} ({formatDistance(sub.distance_meters)})
                             </span>
-                            {sub.instruction && (
-                              <span className="commute-subleg-instruction"> ({sub.instruction})</span>
-                            )}
                           </div>
                         );
                       })}
@@ -396,14 +343,14 @@ export function CentreCommuteView({
             })}
 
             {/* Totals */}
-            {sample?.totals ? (
+            {hasCompleteTotals ? (
               <div className="commute-totals">
                 <div className="commute-totals-value">
                   <strong>
                     Total travel: {formatDuration(sample.totals.duration_seconds)} ({formatDistance(sample.totals.distance_meters)})
                   </strong>
                 </div>
-                <small className="commute-totals-note">Excludes time spent at the centre.</small>
+                <small className="commute-totals-note">Travel time only; child drop-off time is excluded. Actual journeys may vary.</small>
               </div>
             ) : (
               <div className="commute-totals-unavailable">
@@ -413,7 +360,7 @@ export function CentreCommuteView({
                 </button>
               </div>
             )}
-          </div>
+          </div>}
         </>
       )}
     </section>
@@ -426,6 +373,7 @@ export default function CentreCommute({
   centreName = centre?.name || centre?.centre_name,
   currentUser = null,
   profileId = null,
+  workplaceConfigured,
   profileLocationKey = null,
   userId = currentUser?.uid || currentUser?.user_id || currentUser?.id || currentUser?.email || null,
   onSignIn = null,
@@ -446,13 +394,13 @@ export default function CentreCommute({
     <CentreCommuteView
       currentUser={currentUser}
       profileId={profileId}
+      workplaceConfigured={workplaceConfigured}
       centre={centre}
       centreName={centreName}
       loading={session.loading}
       error={session.error}
       data={session.data}
       mode={session.mode}
-      selectedSample={session.selectedSample || session.selectedSampleKind}
       onModeChange={session.setMode}
       onSelectSample={session.selectSample}
       onRetry={session.retry}
