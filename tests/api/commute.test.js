@@ -198,6 +198,24 @@ describe("getCentreCommute API client", () => {
     });
   });
 
+  it("sends the independent baseline and selected-sampling opt-ins together without a legacy pair", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, {
+      comparison_contract: "direct_baseline_v1",
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+    }));
+    await api.getCentreCommute(101, {
+      profileId: "prof-1", mode: "pt", includeDirectBaseline: true,
+      sampling: { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 },
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      profile_id: "prof-1",
+      mode: "pt",
+      include_direct_baseline: true,
+      sampling: { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 },
+    });
+  });
+
   it("rejects contradictory or malformed selected sampling before making a request", async () => {
     const sampling = { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 };
     expect(() => api.getCentreCommute(101, { profileId: "prof-1", mode: "drive", sampling })).toThrow(/only valid for public transport/);

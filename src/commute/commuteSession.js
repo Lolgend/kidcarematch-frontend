@@ -26,6 +26,83 @@ function isZonedTimestamp(value) {
   return typeof value === "string" && /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) && Number.isFinite(Date.parse(value));
 }
 
+function isEndpointAuthorizationError(error) {
+  if (error?.failureClass === "service" || error?.code === "provider_auth_failed") return false;
+  return error?.failureClass === "authentication" || error?.status === 401 || error?.status === 403;
+}
+
+function usableRouteLeg(leg) {
+  return leg?.status === "available" && typeof leg.source === "string" && leg.source.trim() !== "" &&
+    Number.isFinite(leg.duration_seconds) && leg.duration_seconds >= 0 &&
+    Number.isFinite(leg.distance_meters) && leg.distance_meters >= 0 &&
+    Array.isArray(leg.geometry) && leg.geometry.length >= 2 &&
+    leg.geometry.every((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lng));
+}
+
+function sameSelectedEvaluationContext(previous, current) {
+  const oldSample = previous?.samples?.[0];
+  const newSample = current?.samples?.[0];
+  return String(previous?.centre_id) === String(current?.centre_id) &&
+    String(previous?.profile_id) === String(current?.profile_id) && previous?.mode === current?.mode &&
+    previous?.evaluation?.profile_revision === current?.evaluation?.profile_revision &&
+    previous?.evaluation?.anchor_revision === current?.evaluation?.anchor_revision &&
+    previous?.sampling?.cycle_id === current?.sampling?.cycle_id &&
+    previous?.sampling?.selected_index === current?.sampling?.selected_index &&
+    previous?.sampling?.cycle_expires_at === current?.sampling?.cycle_expires_at &&
+    oldSample?.conditions?.conditions_id === newSample?.conditions?.conditions_id &&
+    oldSample?.conditions?.provider_options_id === newSample?.conditions?.provider_options_id &&
+    oldSample?.conditions?.initial_departure_at === newSample?.conditions?.initial_departure_at;
+}
+
+function retainSameConditionRoutes(previous, current) {
+  if (!sameSelectedEvaluationContext(previous, current)) return current;
+  const oldSample = previous.samples[0];
+  const newSample = current.samples[0];
+  const previousLegs = new Map((oldSample.legs || []).map((leg) => [`${leg.from_anchor}:${leg.to_anchor}`, leg]));
+  const currentKeys = new Set((newSample.legs || []).map((leg) => `${leg.from_anchor}:${leg.to_anchor}`));
+  const legs = (newSample.legs || []).map((leg) => {
+    if (usableRouteLeg(leg)) return leg;
+    const old = previousLegs.get(`${leg.from_anchor}:${leg.to_anchor}`);
+    return usableRouteLeg(old) ? old : leg;
+  });
+  for (const [key, leg] of previousLegs) {
+    if (!currentKeys.has(key) && usableRouteLeg(leg)) legs.push(leg);
+  }
+
+  const currentViaComplete = newSample.via_status === "available" &&
+    Number.isFinite(newSample.totals?.duration_seconds) && Number.isFinite(newSample.totals?.distance_meters) &&
+    legs.length === (newSample.legs || []).length && legs.every(usableRouteLeg);
+  const baselineConfirmed = current?.comparison_contract === "direct_baseline_v1" &&
+    previous?.comparison_contract === "direct_baseline_v1";
+  const currentDirectComplete = baselineConfirmed && newSample.direct_route?.status === "available" &&
+    newSample.direct_route.legs?.length === 1 && newSample.direct_route.legs.every(usableRouteLeg) &&
+    Number.isFinite(newSample.direct_route.totals?.duration_seconds) &&
+    Number.isFinite(newSample.direct_route.totals?.distance_meters);
+  const oldDirectComplete = baselineConfirmed && oldSample.direct_route?.status === "available" &&
+    oldSample.direct_route.legs?.length === 1 && oldSample.direct_route.legs.every(usableRouteLeg) &&
+    Number.isFinite(oldSample.direct_route.totals?.duration_seconds) &&
+    Number.isFinite(oldSample.direct_route.totals?.distance_meters);
+  const directRoute = currentDirectComplete ? newSample.direct_route :
+    oldDirectComplete ? oldSample.direct_route : newSample.direct_route;
+  const comparisonIsCurrentAndComplete = currentViaComplete && currentDirectComplete &&
+    newSample.comparison?.status === "available" && Array.isArray(newSample.comparison.reasons) &&
+    newSample.comparison.reasons.length === 0 && newSample.comparison.certification;
+  const comparison = comparisonIsCurrentAndComplete
+    ? newSample.comparison
+    : newSample.comparison
+      ? { ...newSample.comparison, status: "unavailable", certification: null }
+      : newSample.comparison;
+  const mergedSample = {
+    ...newSample,
+    legs,
+    via_status: currentViaComplete ? newSample.via_status : legs.some(usableRouteLeg) ? "partial" : newSample.via_status,
+    totals: currentViaComplete ? newSample.totals : null,
+    ...(baselineConfirmed && directRoute ? { direct_route: directRoute } : {}),
+    ...(comparison ? { comparison } : {}),
+  };
+  return { ...current, samples: [mergedSample] };
+}
+
 function nextPrimaryWednesday(now) {
   const parts = singaporeParts(now);
   if (!parts) return NaN;
@@ -183,7 +260,12 @@ export function createCommuteSession({
   }
 
   async function executeRequest(isRetry = false, newSamplingAttempt = false) {
-    if (newSamplingAttempt) clearExpiryTimer();
+    if (newSamplingAttempt) {
+      clearExpiryTimer();
+      data = null;
+      setData = {};
+      sampling = null;
+    }
     if (activeController) {
       activeController.abort();
       activeController = null;
@@ -300,7 +382,13 @@ export function createCommuteSession({
         }
 
         loading = false;
-        data = null;
+        if (isEndpointAuthorizationError(err)) {
+          clearExpiryTimer();
+          activeSelectedSamplingCycle = null;
+          data = null;
+          setData = {};
+          sampling = null;
+        }
         error = err;
         emit();
       }
@@ -367,50 +455,104 @@ export function createCommuteSession({
       Date.parse(meta.cycle_expires_at) === Date.parse(allowed[0].departure_at);
   }
 
-  function hasClassifiedNoItinerary(errorOrResponse) {
+  function hasClassifiedNoItinerary(errorOrResponse, includeDirectBaseline = false) {
     if (errorOrResponse?.failureClass === "sample_dependent" && errorOrResponse?.code === "no_itinerary") return true;
     const sample = errorOrResponse?.samples?.[0];
     const reasons = [
       ...(Array.isArray(sample?.reasons) ? sample.reasons : []),
       ...(Array.isArray(sample?.legs) ? sample.legs.flatMap((leg) => Array.isArray(leg?.reasons) ? leg.reasons : []) : []),
     ];
+    if (includeDirectBaseline) {
+      reasons.push(...(Array.isArray(sample?.direct_route?.reasons) ? sample.direct_route.reasons : []));
+      reasons.push(...(Array.isArray(sample?.direct_route?.legs)
+        ? sample.direct_route.legs.flatMap((leg) => Array.isArray(leg?.reasons) ? leg.reasons : [])
+        : []));
+    }
     return reasons.some((reason) => reason?.code === "no_itinerary" && reason?.failure_class === "sample_dependent");
   }
 
+  function hasNonSampleDependentComponentFailure(errorOrResponse, includeDirectBaseline = false) {
+    const samples = Array.isArray(errorOrResponse?.samples) ? errorOrResponse.samples : [];
+    const reasons = samples.flatMap((sample) => [
+      ...(Array.isArray(sample?.reasons) ? sample.reasons : []),
+      ...(Array.isArray(sample?.legs) ? sample.legs.flatMap((leg) => Array.isArray(leg?.reasons) ? leg.reasons : []) : []),
+      ...(includeDirectBaseline && Array.isArray(sample?.direct_route?.reasons) ? sample.direct_route.reasons : []),
+      ...(includeDirectBaseline && Array.isArray(sample?.direct_route?.legs)
+        ? sample.direct_route.legs.flatMap((leg) => Array.isArray(leg?.reasons) ? leg.reasons : [])
+        : []),
+    ]);
+    if (errorOrResponse?.status === 401 || errorOrResponse?.status === 403 ||
+        errorOrResponse?.status >= 500 || errorOrResponse?.failureClass === "authentication" ||
+        errorOrResponse?.failureClass === "service") {
+      return true;
+    }
+    const knownReasons = new Set([
+      "no_itinerary", "direct_unavailable", "via_centre_incomplete",
+      "home_unresolved", "centre_unresolved", "workplace_unresolved", "workplace_not_configured",
+      "timing_unverified", "conditions_mismatch", "provider_timeout", "provider_unavailable",
+      "provider_auth_failed", "evaluation_budget_exhausted", "invalid_provider_payload", "geometry_unavailable",
+    ]);
+    return reasons.some((reason) => !knownReasons.has(reason?.code) ||
+      reason?.failure_class === "authentication" || reason?.failure_class === "service");
+  }
+
   async function executeSelectedSampling(requestId, controller, isRetry = false) {
-    let capabilities;
-    try {
-      capabilities = await getCapabilities({ signal: controller.signal });
-    } catch (err) {
-      if (requestId !== activeRequestId || err?.name === "AbortError") return;
-      // A legacy endpoint is the sole discovery failure that means unsupported.
-      if (err?.status !== 404) {
-        loading = false;
-        data = null;
-        setData = {};
-        error = err;
-        emit();
-        return;
+    let discoveryError = null;
+    if (!capabilities) {
+      try {
+        const discovered = await getCapabilities({ signal: controller.signal });
+        if (requestId !== activeRequestId) return;
+        capabilities = hasValidCapabilityDocument(discovered)
+          ? discovered
+          : { invalid: true };
+      } catch (err) {
+        if (requestId !== activeRequestId || err?.name === "AbortError") return;
+        if (err?.status === 404 || String(err?.message || "").startsWith("404:")) {
+          capabilities = { direct_baseline_contract: null, sampling_contract: null };
+        } else {
+          discoveryError = err;
+        }
       }
-      capabilities = null;
     }
 
     if (requestId !== activeRequestId) return;
+    if (discoveryError) {
+      loading = false;
+      data = null;
+      setData = {};
+      error = discoveryError;
+      if (directBaselineEnabled) {
+        directBaselineStatus = "error";
+        directBaselineError = discoveryError;
+      }
+      emit();
+      return;
+    }
+
     const validCapabilities = hasValidCapabilityDocument(capabilities);
     if (!validCapabilities || capabilities.sampling_contract !== SELECTED_SAMPLING_CONTRACT) {
       // Unknown or malformed discovery is unsupported; retain legacy pair behavior.
       selectedSamplingEnabled = false;
+      if (directBaselineEnabled) {
+        const supported = validCapabilities && capabilities.direct_baseline_contract === "direct_baseline_v1";
+        directBaselineStatus = supported ? "supported" : "unsupported";
+      }
       await executeRequest();
       return;
     }
 
+    const includeDirectBaseline = directBaselineEnabled &&
+      capabilities.direct_baseline_contract === "direct_baseline_v1";
+    if (directBaselineEnabled) directBaselineStatus = includeDirectBaseline ? "supported" : "unsupported";
+
+    if (isRetry) activeSelectedSamplingCycle = null;
     const centreIds = [...new Set((comparisonCentreIds || [centreId]).map(String))];
     if (!centreIds.includes(String(centreId))) centreIds.unshift(String(centreId));
     const cycleKey = JSON.stringify([userId || null, profileId, locationKey, mode]);
     if (activeSelectedSamplingCycle?.key === cycleKey && Date.parse(activeSelectedSamplingCycle.cycleExpiresAt) <= now().getTime()) {
       activeSelectedSamplingCycle = null;
     }
-    const retainedCycle = activeSelectedSamplingCycle?.key === cycleKey &&
+    const retainedCycle = !isRetry && activeSelectedSamplingCycle?.key === cycleKey &&
       Date.parse(activeSelectedSamplingCycle.cycleExpiresAt) > now().getTime()
       ? activeSelectedSamplingCycle
       : null;
@@ -420,8 +562,16 @@ export function createCommuteSession({
     let allowedSamples = retainedCycle?.allowedSamples || null;
     let cycleExpiresAt = retainedCycle?.cycleExpiresAt || null;
     let cycleReferenceNow = now();
-    setData = {};
-    data = null;
+    const currentCycleId = sampling?.cycle_id || sampling?.cycleId;
+    const currentSampleIndex = sampling?.selected_index ?? sampling?.selectedIndex;
+    const canRetainSameSample = !isRetry && Boolean(cycleId) &&
+      currentCycleId === cycleId && currentSampleIndex === index &&
+      Date.parse(cycleExpiresAt) > now().getTime();
+    let retainedSetData = canRetainSameSample ? setData : {};
+    if (!canRetainSameSample) {
+      setData = {};
+      data = null;
+    }
 
     while (index < 3 && requestId === activeRequestId) {
       const evaluateCentre = async (id, requestCycleId) => {
@@ -430,6 +580,7 @@ export function createCommuteSession({
             profileId,
             mode,
             samplePair: null,
+            ...(includeDirectBaseline ? { includeDirectBaseline: true } : {}),
             sampling: { policy: SELECTED_SAMPLING_CONTRACT, cycle_id: requestCycleId, sample_index: index },
           }, { signal: controller.signal });
           if (!validSelectedResponse(response, index, requestCycleId, id, cycleReferenceNow)) {
@@ -454,6 +605,11 @@ export function createCommuteSession({
       if (requestId !== activeRequestId || controller.signal.aborted) return;
       const firstResponse = evaluations.find((item) => item.response)?.response;
       if (firstResponse) {
+        if (includeDirectBaseline) {
+          directBaselineStatus = firstResponse.comparison_contract === "direct_baseline_v1"
+            ? "supported"
+            : "unsupported";
+        }
         cycleId = firstResponse.sampling.cycle_id;
         allowedSamples = firstResponse.sampling.allowed_samples;
         cycleExpiresAt = firstResponse.sampling.cycle_expires_at;
@@ -461,7 +617,10 @@ export function createCommuteSession({
         if (evaluations.some((item) => item.response &&
           (item.response.sampling.cycle_id !== cycleId ||
            item.response.evaluation.profile_revision !== firstResponse.evaluation.profile_revision ||
-           item.response.sampling.allowed_samples.some((entry, i) => entry.conditions_id !== allowedSamples[i].conditions_id)))) {
+           item.response.sampling.allowed_samples.some((entry, i) => entry.conditions_id !== allowedSamples[i].conditions_id) ||
+           item.response.samples[0].conditions.conditions_id !== firstResponse.samples[0].conditions.conditions_id ||
+           item.response.samples[0].conditions.provider_options_id !== firstResponse.samples[0].conditions.provider_options_id ||
+           item.response.samples[0].conditions.initial_departure_at !== firstResponse.samples[0].conditions.initial_departure_at))) {
           loading = false;
           data = null;
           setData = {};
@@ -490,6 +649,7 @@ export function createCommuteSession({
         cycleExpiresAt = null;
         activeSelectedSamplingCycle = null;
         setData = {};
+        retainedSetData = {};
         data = null;
         sampling = null;
         emit();
@@ -505,15 +665,37 @@ export function createCommuteSession({
         activeSelectedSamplingCycle = { key: cycleKey, cycleId, selectedIndex: index, cycleExpiresAt, allowedSamples };
       }
 
-      const dependentFailure = evaluations.some(({ error: err, response }) =>
-        hasClassifiedNoItinerary(response) ||
-        (hasClassifiedNoItinerary(err) && validErrorSamplingMetadata(err.sampling, index, cycleId, cycleReferenceNow)));
+      const dependentFailure = evaluations.some(({ error: err, response }) => {
+        const responseBaselineConfirmed = includeDirectBaseline &&
+          response?.comparison_contract === "direct_baseline_v1";
+        const errorBaselineConfirmed = includeDirectBaseline &&
+          err?.comparison_contract === "direct_baseline_v1";
+        return (hasClassifiedNoItinerary(response, responseBaselineConfirmed) &&
+          !hasNonSampleDependentComponentFailure(response, responseBaselineConfirmed)) ||
+        (hasClassifiedNoItinerary(err, errorBaselineConfirmed) &&
+          !hasNonSampleDependentComponentFailure(err, errorBaselineConfirmed) &&
+          validErrorSamplingMetadata(err.sampling, index, cycleId, cycleReferenceNow));
+      });
       const authFailure = evaluations.some(({ error: err }) =>
         err?.status === 401 || err?.status === 403 || err?.failureClass === "authentication");
+      const endpointAuthError = evaluations.find(({ error: err }) => isEndpointAuthorizationError(err))?.error;
+      if (endpointAuthError) {
+        clearExpiryTimer();
+        activeSelectedSamplingCycle = null;
+        setData = {};
+        retainedSetData = {};
+        data = null;
+        sampling = null;
+        loading = false;
+        error = endpointAuthError;
+        emit();
+        return;
+      }
       if (dependentFailure && !authFailure && index < 2) {
         index += 1;
         // A new condition invalidates every route in the active set.
         setData = {};
+        retainedSetData = {};
         data = null;
         sampling = { cycleId, selectedIndex: index, cycleExpiresAt, allowedSamples };
         activeSelectedSamplingCycle = { key: cycleKey, cycleId, selectedIndex: index, cycleExpiresAt, allowedSamples };
@@ -522,7 +704,15 @@ export function createCommuteSession({
       }
 
       if (requestId !== activeRequestId) return;
-      setData = Object.fromEntries(evaluations.filter((item) => item.response).map(({ id, response }) => [id, response]));
+      const currentResponses = Object.fromEntries(evaluations.filter((item) => item.response).map(({ id, response }) => [id, response]));
+      if (Object.entries(currentResponses).some(([id, response]) =>
+        retainedSetData[id] && !sameSelectedEvaluationContext(retainedSetData[id], response))) {
+        retainedSetData = {};
+      }
+      setData = { ...retainedSetData };
+      for (const [id, response] of Object.entries(currentResponses)) {
+        setData[id] = retainedSetData[id] ? retainSameConditionRoutes(retainedSetData[id], response) : response;
+      }
       data = setData[String(centreId)] || null;
       loading = false;
       const failed = evaluations.find(({ error: err }) => err);
@@ -532,7 +722,8 @@ export function createCommuteSession({
         : { cycleId, selectedIndex: index, cycleExpiresAt, allowedSamples };
       if (cycleId && cycleExpiresAt) {
         const canRefresh = evaluations.length > 0 && evaluations.every(({ error: err, response }) =>
-          !err && response?.samples?.[0]?.via_status === "available" && !hasClassifiedNoItinerary(response));
+          !err && response?.samples?.[0]?.via_status === "available" &&
+          !hasClassifiedNoItinerary(response, includeDirectBaseline));
         scheduleCycleExpiry(cycleKey, cycleId, cycleExpiresAt, canRefresh);
       }
       emit();
@@ -617,7 +808,10 @@ export function createCommuteSession({
     },
 
     async retry() {
-      await executeRequest(false, selectedSamplingEnabled && mode === "pt");
+      const retrySameSelectedCondition = selectedSamplingEnabled && mode === "pt" &&
+        (sampling?.selected_index ?? sampling?.selectedIndex) === 0 &&
+        Boolean(sampling?.cycle_id || sampling?.cycleId);
+      await executeRequest(false, selectedSamplingEnabled && mode === "pt" && !retrySameSelectedCondition);
     },
 
     reset() {
@@ -711,7 +905,7 @@ export function useCommuteSession({
       setState({
         mode: getSessionMode(userId), selectedSample: 'weekday', selectedSampleKind: 'weekday',
         centreId, profileId, locationKey, samplePair: getSessionSamplePair(userId),
-        loading: Boolean(centreId && profileId), error: null, data: null,
+        loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, sampling: null,
         directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled", directBaselineError: null,
       });
     }
@@ -732,7 +926,7 @@ export function useCommuteSession({
       selectedSampleKind: sessionRef.current.userId === userId ? state.selectedSampleKind : 'weekday',
       samplePair: sessionRef.current.userId === userId ? state.samplePair : currentSamplePair,
       centreId, profileId, locationKey,
-      loading: Boolean(centreId && profileId), error: null, data: null,
+      loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, sampling: null,
       directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled", directBaselineError: null,
     };
 
