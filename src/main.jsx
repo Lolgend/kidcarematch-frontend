@@ -1574,6 +1574,7 @@ export function App() {
           return;
         }
 
+        if (!centreIdFromPath(window.location.pathname)) setPage('Overview');
         notify('Welcome back!');
       } else if (authMode === 'forgot') {
         await sendPasswordResetEmail(auth, email);
@@ -1601,6 +1602,7 @@ export function App() {
     try {
       deliberateSignInRef.current = true;
       await signInWithPopup(auth, new GoogleAuthProvider());
+      if (!centreIdFromPath(window.location.pathname)) setPage('Overview');
       setAuthMode('');
       notify('Successfully signed in with Google!');
     } catch (error) {
