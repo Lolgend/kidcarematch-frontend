@@ -2819,6 +2819,8 @@ export function App() {
                           </p>}
                           {(centre.fee_breakdown?.estimated_subsidy ?? centre.subsidy_amount ?? centre.fee_breakdown?.subsidy_amount) != null && <p>Estimated subsidy: {money(centre.fee_breakdown?.estimated_subsidy ?? centre.subsidy_amount ?? centre.fee_breakdown?.subsidy_amount)}</p>}
                           <p>Vacancy: {centre.current_vacancy_status ?? centre.vacancy_status ?? centre.vacancy?.status ?? centre.vacancy_information?.status ?? 'Not provided'}</p>
+                          {centre.enrollment_month_year && <p>Vacancy month: {monthYear(centre.enrollment_month_year)}</p>}
+                          {(centre.travel_breakdown?.commute_duration_mins ?? centre.travel_breakdown?.duration_mins ?? centre.travel_breakdown?.duration_minutes) != null && <p className="fine-print">Matching travel estimate: {centre.travel_breakdown.commute_duration_mins ?? centre.travel_breakdown.duration_mins ?? centre.travel_breakdown.duration_minutes} min{(centre.travel_breakdown.commute_distance_km ?? centre.travel_breakdown.distance_km) != null ? ` · ${centre.travel_breakdown.commute_distance_km ?? centre.travel_breakdown.distance_km} km` : ''}</p>}
                           <MatchCommuteSummary centre={centre} summary={commute.summary} error={commute.errors}
                             loading={commute.loading} workplaceConfigured={Boolean(profile?.work)} onRetry={commute.retry} />
                           <p className="fine-print">{[
