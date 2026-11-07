@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { failClosedFetch, jsonResponse } from './support/fetch.js';
 
 const authHarness = vi.hoisted(() => ({
@@ -136,9 +136,14 @@ describe('importance ratings and backend matching flow', () => {
       return { user };
     });
     await renderApp();
-    fireEvent.click(screen.getByRole('button', { name: /continue with google/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /continue with google/i }));
+    });
     if (waitForOverview) {
       await waitFor(() => expect(screen.getByText('Overview', { selector: 'b' })).toBeTruthy());
+      await openPage('Family profile');
+      await screen.findByRole('slider', { name: 'Vacancy fit' }, { timeout: 4000 });
+      await openPage('Overview');
     } else {
       await waitFor(() => expect(requests.some((request) => request.path === '/api/v1/profile' && request.method === 'GET')).toBe(true));
     }
@@ -148,6 +153,11 @@ describe('importance ratings and backend matching flow', () => {
     const nav = [...document.querySelectorAll('.nav-item')].find((button) => button.textContent.includes(label));
     expect(nav).toBeTruthy();
     fireEvent.click(nav);
+  }
+
+  async function openMatches() {
+    await signIn();
+    await openPage('Find my matches');
   }
 
   it('loads, saves, and matches with exact integer ratings; keeps backend order, score, fee, vacancy, count, and centre actions', async () => {
@@ -255,8 +265,7 @@ describe('importance ratings and backend matching flow', () => {
     };
     results[0].highlight = 'Backend Centre 1 balances vacancy and cost.';
     results[1].highlight = 'Backend Centre 2 has the best travel fit.';
-    await signIn();
-    await openPage('Find my matches');
+    await openMatches();
 
     const summary = await screen.findByRole('heading', { name: 'Why these matches' }, { timeout: 5000 });
     expect(summary.parentElement.textContent).toContain(explanation.summary_narrative);
@@ -269,8 +278,7 @@ describe('importance ratings and backend matching flow', () => {
   });
 
   it('omits each independently missing or blank explanation field', async () => {
-    await signIn();
-    await openPage('Find my matches');
+    await openMatches();
     await screen.findByText('Showing 10 matches', {}, { timeout: 4000 });
 
     const cases = [
@@ -313,14 +321,16 @@ describe('importance ratings and backend matching flow', () => {
   }, 20000);
 
   it('keeps per-result and positional highlights with their cards through centre detail and return', async () => {
+    const cssTestApi = { escape: (value) => String(value) };
+    vi.stubGlobal('CSS', cssTestApi);
+    Object.defineProperty(window, 'CSS', { configurable: true, value: cssTestApi });
     explanation = {
       summary_narrative: 'A summary that stays with these results.',
       candidate_highlights: ['   ', 'Second centre positional highlight.'],
     };
     results[0].highlight = 'First centre result highlight.';
     results[1].highlight = 'Second centre result highlight.';
-    await signIn();
-    await openPage('Find my matches');
+    await openMatches();
 
     await screen.findByText('Showing 10 matches', {}, { timeout: 4000 });
     let cards = [...document.querySelectorAll('.centre-card')];
@@ -332,11 +342,12 @@ describe('importance ratings and backend matching flow', () => {
     fireEvent.click(within(cards[0]).getByRole('button', { name: 'View details' }));
     await screen.findByRole('heading', { level: 1, name: 'Backend Centre 1' });
     fireEvent.click(screen.getByRole('link', { name: /browse centres/i }));
-    expect(await screen.findByRole('heading', { name: 'Why these matches' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Why these matches' }, { timeout: 4000 })).toBeTruthy();
     expect(screen.getByText('A summary that stays with these results.')).toBeTruthy();
     cards = [...document.querySelectorAll('.centre-card')];
     expect(within(cards[0]).getByText('First centre result highlight.')).toBeTruthy();
     expect(within(cards[1]).getByText('Second centre positional highlight.')).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(cards[0].querySelector('[data-centre-id="match-1"]')));
   }, 15000);
 
 });

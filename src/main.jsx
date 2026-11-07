@@ -629,7 +629,7 @@ export function App() {
       setCompareDistricts([]);
       setCompareWatchlistOnly(false);
     }
-    if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
+    if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot?.results)) {
       restoreMatchingOrigin(origin);
     }
   };
@@ -1188,7 +1188,14 @@ export function App() {
           compareWatchlistOnly: page === 'Compare centres' ? compareWatchlistOnly : undefined,
           compareScrollY: page === 'Compare centres' ? window.scrollY : undefined,
           compareSelectionScrollY: page === 'Compare centres' ? compareSelectionScrollY : undefined,
-          matchSnapshot: page === 'Find my matches' ? ranked : null,
+          matchSnapshot: page === 'Find my matches' ? {
+            results: ranked,
+            run: matchRun ? {
+              profileId: matchRun.profileId,
+              weights: matchRun.weights,
+              explanation: matchRun.explanation,
+            } : null,
+          } : null,
           matchControls: page === 'Find my matches' ? { budget: Number(budget), weights: { ...weights } } : null,
           scrollY: window.scrollY,
           focusCentreId: String(centre.id),
@@ -1810,7 +1817,7 @@ export function App() {
     : [];
 
   useEffect(() => {
-    if (page !== 'Find my matches' || matchStatus !== 'loading' || !Array.isArray(restoredMatchSnapshot) || !profile) return undefined;
+    if (page !== 'Find my matches' || matchStatus !== 'loading' || !Array.isArray(restoredMatchSnapshot?.results) || !profile) return undefined;
     const generation = ++matchRestoreGenerationRef.current;
     const restoredRun = {
       level: profile.level,
@@ -1818,10 +1825,13 @@ export function App() {
       home: profile.home,
       work: profile.work || '',
       enrolMonth: profile.enrolMonth,
+      profileId: restoredMatchSnapshot.run?.profileId || profile.profileId || profile.profile_id,
+      weights: restoredMatchSnapshot.run?.weights || profile.weights,
+      explanation: restoredMatchSnapshot.run?.explanation,
     };
     setMatchRun(restoredRun);
     if (generation !== matchRestoreGenerationRef.current) return;
-    setMatchCandidates(restoredMatchSnapshot);
+    setMatchCandidates(restoredMatchSnapshot.results);
     setMatchStatus('done');
     setMatchMessage('Restored your previous matches.');
     return () => { matchRestoreGenerationRef.current += 1; };
@@ -1860,6 +1870,8 @@ export function App() {
         home: savedProfile.home,
         work: savedProfile.work || '',
         enrolMonth: savedProfile.enrolMonth,
+        profileId: savedProfileId,
+        weights: savedProfile.weights,
         explanation: response?.explanation,
       });
       setMatchCandidates(backendResults);
