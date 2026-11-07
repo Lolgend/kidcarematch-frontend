@@ -532,6 +532,13 @@ function App() {
 
   // Hooks must live inside the component (this was at module level before).
   const [compareSelectedIds, setCompareSelectedIds] = useState([]);
+  const [compareStep, setCompareStep] = useState('selection');
+  const [compareQuery, setCompareQuery] = useState('');
+  const [compareWatchlistOnly, setCompareWatchlistOnly] = useState(false);
+  const [compareDirectoryCentres, setCompareDirectoryCentres] = useState([]);
+  const [compareDirectoryStatus, setCompareDirectoryStatus] = useState('idle');
+  const [compareDirectoryError, setCompareDirectoryError] = useState('');
+  const [compareDirectoryReload, setCompareDirectoryReload] = useState(0);
 
   const [saved, setSaved] = useState([]);
 
@@ -1421,6 +1428,7 @@ function App() {
       invalidateCentreDetailRequests();
       setSelectedCentre(null);
     }
+    if (nextPage === 'Compare centres') setCompareStep('selection');
     setPage(nextPage);
     setMobileOpen(false);
   };
@@ -1570,13 +1578,6 @@ function App() {
     );
   } catch (error) {
     console.warn('Could not save watchlist locally:', error);
-  }
-
-  // Remove from comparison when a centre is unsaved.
-  if (wasSaved) {
-    setCompareSelectedIds((items) =>
-      items.filter((item) => item !== String(centreId))
-    );
   }
 
   notify(
@@ -1945,10 +1946,58 @@ function App() {
     [saved, centreLookup]
   );
 
-  // The Compare page only offers centres from the user's watchlist.
-  const compareOptions = watchlistCentres;
+  // Load the complete accessible directory for comparison. Search/filtering stays server-side,
+  // and each returned page is accumulated so selections remain identifiable when hidden.
+  useEffect(() => {
+    if (page !== 'Compare centres') return undefined;
+    let cancelled = false;
+    const run = async () => {
+      setCompareDirectoryStatus('loading');
+      setCompareDirectoryError('');
+      const term = compareQuery.trim();
+      const params = { limit: 100, offset: 0 };
+      if (term) {
+        if (/^\d+$/.test(term)) params.postal_prefix = term;
+        else params.query = term;
+      }
+      try {
+        const first = await getCentres(params);
+        const firstItems = Array.isArray(first) ? first : first?.items;
+        if (!Array.isArray(firstItems)) throw new Error('Unexpected directory response.');
+        const total = Number(first?.total ?? firstItems.length);
+        const all = [...firstItems];
+        for (let offset = 100; offset < total; offset += 100) {
+          const next = await getCentres({ ...params, offset });
+          const items = Array.isArray(next) ? next : next?.items;
+          if (!Array.isArray(items)) throw new Error('Unexpected directory response.');
+          all.push(...items);
+        }
+        if (!cancelled) {
+          const mapped = all.map(mapCentre);
+          setCompareDirectoryCentres(mapped);
+          setFetchedCentres((current) => ({
+            ...current,
+            ...Object.fromEntries(mapped.map((centre) => [String(centre.id), centre])),
+          }));
+          setCompareDirectoryStatus('ready');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCompareDirectoryError(error.message || 'Could not load centres.');
+          setCompareDirectoryStatus('error');
+        }
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [page, compareQuery, compareDirectoryReload]);
 
-  // Centres the user ticked for comparison (max 3).
+  const compareOptions = useMemo(() => compareWatchlistOnly
+    ? compareDirectoryCentres.filter((centre) => saved.map(String).includes(String(centre.id)))
+    : compareDirectoryCentres,
+  [compareDirectoryCentres, compareWatchlistOnly, saved]);
+
+  // Centres the user ticked for comparison (max 3), independent of current search results.
   const compareCentres = useMemo(
     () => compareSelectedIds.map((id) => centreLookup.get(String(id))).filter(Boolean).slice(0, 3),
     [compareSelectedIds, centreLookup]
@@ -2795,79 +2844,57 @@ function App() {
 
           {page === 'Compare centres' && (
             <>
-              <PageTitle
-                eyebrow="SIDE-BY-SIDE VIEW"
-                title="Compare centres"
-                subtitle="Pick up to 3 centres from your watchlist to compare side by side."
-              />
+              {compareStep === 'selection' ? (
+                <>
+                  <PageTitle title="Choose centres" subtitle="Search the full directory, then select two or three centres to compare." />
+                  <section className="panel compare-picker">
+                    <label className="compare-search-label" htmlFor="compare-search">Search centres</label>
+                    <input
+                      id="compare-search"
+                      className="compare-search"
+                      type="search"
+                      value={compareQuery}
+                      onChange={(event) => setCompareQuery(event.target.value)}
+                      placeholder="Name, area or postal code"
+                    />
+                    <div className="compare-picker-toolbar">
+                      <label className="compare-filter">
+                        <input type="checkbox" checked={compareWatchlistOnly} onChange={(event) => setCompareWatchlistOnly(event.target.checked)} />
+                        <span>Watchlist only</span>
+                      </label>
+                      <button className="text-btn" onClick={() => setCompareSelectedIds([])} disabled={!compareSelectedIds.length}>Clear selection</button>
+                    </div>
+                    <div className="compare-selection-summary" aria-live="polite">
+                      <div><strong>{compareSelectedIds.length} of 3 selected</strong><span>{compareCentres.map((centre) => centre.name).join(' · ') || 'Choose at least two centres.'}</span></div>
+                      <button className="primary-btn" disabled={compareSelectedIds.length < 2 || compareSelectedIds.length > 3} onClick={() => { setCompareStep('comparison'); window.scrollTo(0, 0); }}>Compare</button>
+                    </div>
 
-              <section className="panel" style={{ padding: 20, marginBottom: 24 }}>
-                <div className="results-top">
-                  <div>
-                    <h2>1. Choose from your watchlist</h2>
-                    <p>{compareSelectedIds.length} of 3 centres selected</p>
-                  </div>
+                    {compareDirectoryStatus === 'loading' && <p role="status" className="compare-picker-state">Loading centres…</p>}
+                    {compareDirectoryStatus === 'error' && <div className="compare-picker-state" role="alert"><p>Could not load centres: {compareDirectoryError}</p><button className="secondary-btn" onClick={() => setCompareDirectoryReload((value) => value + 1)}>Try again</button></div>}
+                    {compareDirectoryStatus === 'ready' && compareOptions.length === 0 && <p className="compare-picker-state">{compareWatchlistOnly ? 'No watchlist centres match. Clear Watchlist only to search the full directory.' : 'No centres found. Try another name, area or postal code.'}</p>}
+                    {compareDirectoryStatus === 'ready' && compareOptions.length > 0 && (
+                      <div className="compare-option-list" aria-label="Centres">
+                        {compareOptions.map((centre) => {
+                          const id = String(centre.id);
+                          const checked = compareSelectedIds.includes(id);
+                          const limitReached = !checked && compareSelectedIds.length >= 3;
+                          return <label key={id} className={`compare-option${checked ? ' selected' : ''}`}>
+                            <input type="checkbox" checked={checked} disabled={limitReached} aria-label={`Select ${centre.name}`} onChange={() => setCompareSelectedIds((items) => checked ? items.filter((item) => item !== id) : items.length < 3 && !items.includes(id) ? [...items, id] : items)} />
+                            <span><strong>{centre.name}</strong><small>{centre.address || 'Address not provided'}{centre.postal ? ` · ${centre.postal}` : ''}</small></span>
+                          </label>;
+                        })}
+                      </div>
+                    )}
+                  </section>
+                </>
+              ) : (
+                <>
+                  <PageTitle title="Compare centres" subtitle="Review the centres you selected side by side." />
+                  <button className="secondary-btn compare-edit" onClick={() => { setCompareStep('selection'); window.scrollTo(0, 0); }}>Edit selection</button>
+                </>
+              )}
 
-                  <button
-                    className="text-btn"
-                    onClick={() => setCompareSelectedIds([])}
-                    disabled={compareSelectedIds.length === 0}
-                  >
-                    Clear selection
-                  </button>
-                </div>
-
-                {compareOptions.length === 0 ? (
-                  <Empty
-                    title="Your watchlist is empty"
-                    text="Save centres to your watchlist first, then choose up to 3 of them here to compare."
-                    action={() => openPage('Preschool directory')}
-                  />
-                ) : (
-                  <div className="form-grid">
-                    {compareOptions.map((centre) => {
-                      const id = String(centre.id);
-                      const checked = compareSelectedIds.includes(id);
-
-                      return (
-                        <label
-                          key={id}
-                          className="panel"
-                          style={{
-                            display: 'flex',
-                            gap: 12,
-                            alignItems: 'flex-start',
-                            padding: 14,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              if (checked) {
-                                setCompareSelectedIds((items) => items.filter((item) => item !== id));
-                              } else if (compareSelectedIds.length < 3) {
-                                setCompareSelectedIds((items) => [...items, id]);
-                              } else {
-                                notify('You can compare a maximum of 3 centres.');
-                              }
-                            }}
-                          />
-
-                          <span>
-                            <strong>{centre.name}</strong>
-                            <br />
-                            <small>{centre.address || 'Address not provided'}</small>
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-
-              <section>
+              {compareStep === 'comparison' && <section>
                 <div className="results-top">
                   <div>
                     <h2>2. Compare side by side</h2>
@@ -2978,7 +3005,7 @@ function App() {
                     })}
                   </div>
                 )}
-              </section>
+              </section>}
             </>
           )}
 
