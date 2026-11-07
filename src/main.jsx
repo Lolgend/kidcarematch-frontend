@@ -548,6 +548,11 @@ export function App() {
   const [matchCandidates, setMatchCandidates] = useState([]);
   const [matchStatus, setMatchStatus] = useState('idle'); // idle | loading | done | error
   const [matchMessage, setMatchMessage] = useState('');
+  const matchRequestGenerationRef = useRef(0);
+  const ratingEditGenerationRef = useRef(0);
+  const profileWriteQueueRef = useRef(Promise.resolve());
+  const [ratingSaveStatus, setRatingSaveStatus] = useState('idle'); // idle | saving | error
+  const [ratingSaveMessage, setRatingSaveMessage] = useState('');
   useEffect(() => {
     if (selectedCentre || centresLoading) return;
     const origin = pendingCentreOriginRestoreRef.current;
@@ -577,6 +582,8 @@ export function App() {
   }, [scoreInfoOpen]);
   const [toast, setToast] = useState('');
   const [profile, setProfile] = useState(null); // the saved family profile (null = not set up yet)
+  const latestSavedProfileRef = useRef(profile);
+  latestSavedProfileRef.current = profile;
   const [profileId, setProfileId] = useState(null);
   const [profileName, setProfileName] = useState('My family profile');
   const [profileForm, setProfileForm] = useState(() => ({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() }));
@@ -629,7 +636,7 @@ export function App() {
       setCompareDistricts([]);
       setCompareWatchlistOnly(false);
     }
-    if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot?.results)) {
+    if (restoredPage === 'Find my matches' && (Array.isArray(origin.matchSnapshot) || Array.isArray(origin.matchSnapshot?.results))) {
       restoreMatchingOrigin(origin);
     }
   };
@@ -874,6 +881,10 @@ export function App() {
         setMatchCandidates([]);
         setRestoredMatchSnapshot(null);
         matchRestoreGenerationRef.current += 1;
+        matchRequestGenerationRef.current += 1;
+        ratingEditGenerationRef.current += 1;
+        setRatingSaveStatus('idle');
+        setRatingSaveMessage('');
         setMatchStatus('idle');
         setMatchMessage('');
         setQuery('');
@@ -1188,14 +1199,15 @@ export function App() {
           compareWatchlistOnly: page === 'Compare centres' ? compareWatchlistOnly : undefined,
           compareScrollY: page === 'Compare centres' ? window.scrollY : undefined,
           compareSelectionScrollY: page === 'Compare centres' ? compareSelectionScrollY : undefined,
-          matchSnapshot: page === 'Find my matches' ? {
-            results: ranked,
-            run: matchRun ? {
+          matchSnapshot: page === 'Find my matches' && matchRun
+            ? { results: ranked, run: {
+              uid: matchRun.uid,
               profileId: matchRun.profileId,
               weights: matchRun.weights,
               explanation: matchRun.explanation,
-            } : null,
-          } : null,
+              criteriaVerified: false,
+            } }
+            : null,
           matchControls: page === 'Find my matches' ? { budget: Number(budget), weights: { ...weights } } : null,
           scrollY: window.scrollY,
           focusCentreId: String(centre.id),
@@ -1766,31 +1778,12 @@ export function App() {
 };
   // Importance changes on this page save after a short pause before matching again.
   const updateRating = (key, rating) => {
-    setRestoredMatchSnapshot(null);
+    ratingEditGenerationRef.current += 1;
+    setRatingSaveStatus('idle');
+    setRatingSaveMessage('');
     setWeights((current) => ({ ...current, [key]: rating }));
+    setProfileForm((current) => ({ ...current, weights: { ...current.weights, [key]: rating } }));
   };
-
-  useEffect(() => {
-    if (!profile || !currentUser) return undefined;
-    if (JSON.stringify(weights) === JSON.stringify(profile.weights)) return undefined;
-    const timer = setTimeout(async () => {
-      const next = { ...profile, weights };
-      setProfileForm((form) => ({ ...form, weights }));
-      if (profileId) {
-        try {
-          const savedResponse = await updateFamilyProfile(profileId, toApiProfile(next, profileName));
-          const savedProfile = fromApiProfile(savedResponse || toApiProfile(next, profileName), next);
-          setProfile(savedProfile);
-          setProfileForm(savedProfile);
-          setWeights(savedProfile.weights);
-          await runMatching(savedProfile);
-        } catch (error) {
-          console.warn('Importance rating save:', error.message);
-        }
-      }
-    }, 800);
-    return () => clearTimeout(timer);
-  }, [weights, profile, profileId, profileName, currentUser]);
 
   const filtered = useMemo(() => {
     return centres.filter((centre) => {
@@ -1815,27 +1808,38 @@ export function App() {
   const candidateHighlights = Array.isArray(matchExplanation?.candidate_highlights)
     ? matchExplanation.candidate_highlights
     : [];
+  const matchIsOutdated = Boolean(matchRun && (
+    matchRun.uid !== (currentUser?.uid || null) ||
+    matchRun.criteriaVerified === false ||
+    (matchRun.profileId && matchRun.profileId !== profileId) ||
+    JSON.stringify(matchRun.weights) !== JSON.stringify(weights) ||
+    matchStatus === 'loading' || matchStatus === 'error'
+  ));
 
   useEffect(() => {
-    if (page !== 'Find my matches' || matchStatus !== 'loading' || !Array.isArray(restoredMatchSnapshot?.results) || !profile) return undefined;
+    const restoredResults = Array.isArray(restoredMatchSnapshot)
+      ? restoredMatchSnapshot
+      : restoredMatchSnapshot?.results;
+    if (page !== 'Find my matches' || matchStatus !== 'loading' || !Array.isArray(restoredResults) || !profile) return undefined;
     const generation = ++matchRestoreGenerationRef.current;
-    const restoredRun = {
+    const legacyRun = {
+      uid: currentUser?.uid || null,
+      profileId,
       level: profile.level,
       citizenship: profile.citizenship,
       home: profile.home,
       work: profile.work || '',
       enrolMonth: profile.enrolMonth,
-      profileId: restoredMatchSnapshot.run?.profileId || profile.profileId || profile.profile_id,
-      weights: restoredMatchSnapshot.run?.weights || profile.weights,
-      explanation: restoredMatchSnapshot.run?.explanation,
+      weights: null,
+      explanation: null,
     };
-    setMatchRun(restoredRun);
+    setMatchRun(Array.isArray(restoredMatchSnapshot) ? legacyRun : restoredMatchSnapshot.run || legacyRun);
     if (generation !== matchRestoreGenerationRef.current) return;
-    setMatchCandidates(restoredMatchSnapshot.results);
+    setMatchCandidates(restoredResults);
     setMatchStatus('done');
     setMatchMessage('Restored your previous matches.');
     return () => { matchRestoreGenerationRef.current += 1; };
-  }, [matchStatus, page, profile, restoredMatchSnapshot]);
+  }, [matchStatus, page, profile, profileId, currentUser?.uid, restoredMatchSnapshot]);
 
   const runMatching = async (savedProfile = profile) => {
     setRestoredMatchSnapshot(null);
@@ -1844,12 +1848,14 @@ export function App() {
       notify('Save your family profile before finding matches.');
       return;
     }
+    const generation = ++matchRequestGenerationRef.current;
+    const requestUid = currentUser?.uid || null;
     setMatchStatus('loading');
     setMatchMessage('Finding matches using your saved preferences…');
-    setMatchCandidates([]);
 
     try {
       const response = await matchCentres({ profile_id: savedProfileId, top_n: 10 });
+      if (generation !== matchRequestGenerationRef.current || requestUid !== activeAccountIdRef.current) return;
       const results = Array.isArray(response)
         ? response
         : response?.results ?? response?.matches ?? response?.items ?? [];
@@ -1865,23 +1871,73 @@ export function App() {
         };
       });
       setMatchRun({
+        uid: requestUid,
+        profileId: savedProfileId,
         level: savedProfile.level,
         citizenship: savedProfile.citizenship,
         home: savedProfile.home,
         work: savedProfile.work || '',
         enrolMonth: savedProfile.enrolMonth,
-        profileId: savedProfileId,
-        weights: savedProfile.weights,
-        explanation: response?.explanation,
+        weights: { ...savedProfile.weights },
+        criteriaVerified: true,
+        explanation: response?.explanation ?? null,
       });
       setMatchCandidates(backendResults);
       setMatchStatus('done');
       setMatchMessage(results.length ? 'Matches use your saved family preferences.' : 'No matches were returned for your saved preferences.');
     } catch (error) {
+      if (generation !== matchRequestGenerationRef.current || requestUid !== activeAccountIdRef.current) return;
       setMatchStatus('error');
       setMatchMessage(error.message || 'Could not load matches.');
     }
   };
+
+  const saveEditedRatings = async () => {
+    if (!profile || !profileId || !currentUser) return;
+    const generation = ratingEditGenerationRef.current;
+    const uid = currentUser.uid || null;
+    const intendedWeights = { ...weights };
+    setRatingSaveStatus('saving');
+    setRatingSaveMessage('Saving your latest importance ratings…');
+    setProfileForm((form) => ({ ...form, weights: intendedWeights }));
+    const write = profileWriteQueueRef.current.then(async () => {
+      if (uid !== activeAccountIdRef.current) return;
+      const next = { ...(latestSavedProfileRef.current || profile), weights: intendedWeights };
+      const payload = toApiProfile(next, profileName);
+      const savedResponse = await updateFamilyProfile(profileId, payload);
+      if (uid !== activeAccountIdRef.current) return;
+      const savedProfile = fromApiProfile(savedResponse || payload, next);
+      latestSavedProfileRef.current = savedProfile;
+      return savedProfile;
+    });
+    profileWriteQueueRef.current = write.catch(() => undefined);
+    try {
+      const savedProfile = await write;
+      if (!savedProfile || uid !== activeAccountIdRef.current || generation !== ratingEditGenerationRef.current) return;
+      setProfile(savedProfile);
+      setProfileForm(savedProfile);
+      setWeights(savedProfile.weights);
+      setRatingSaveStatus('idle');
+      setRatingSaveMessage('');
+      await runMatching(savedProfile);
+    } catch (error) {
+      if (uid !== activeAccountIdRef.current || generation !== ratingEditGenerationRef.current) return;
+      setRatingSaveStatus('error');
+      setRatingSaveMessage(error.message || 'Your importance ratings could not be saved. Retry to use them for matching.');
+    }
+  };
+
+  const retryMatching = () => {
+    if (profile && JSON.stringify(weights) !== JSON.stringify(profile.weights)) return saveEditedRatings();
+    return runMatching();
+  };
+
+  useEffect(() => {
+    if (!profile || !currentUser) return undefined;
+    if (JSON.stringify(weights) === JSON.stringify(profile.weights)) return undefined;
+    const timer = setTimeout(() => { void saveEditedRatings(); }, 800);
+    return () => clearTimeout(timer);
+  }, [weights, profile, currentUser]);
 
   const saveProfile = async (event) => {
     event.preventDefault();
@@ -1892,8 +1948,14 @@ export function App() {
     }
     if (controller.getState().status === 'saving') return;
     setProfileSaving(true);
-    try {
+    const save = profileWriteQueueRef.current.then(async () => {
+      if (controller.getState().status === 'saving') return;
       await controller.save(profileForm);
+      latestSavedProfileRef.current = controller.getState().profile || latestSavedProfileRef.current;
+    });
+    profileWriteQueueRef.current = save.catch(() => undefined);
+    try {
+      await save;
     } finally {
       setProfileSaving(false);
     }
@@ -2775,10 +2837,10 @@ export function App() {
 
                       <button
                         className="primary-btn full"
-                        onClick={runMatching}
-                        disabled={matchStatus === 'loading' || JSON.stringify(weights) !== JSON.stringify(profile.weights)}
+                        onClick={() => (JSON.stringify(weights) === JSON.stringify(profile.weights) ? runMatching() : saveEditedRatings())}
+                        disabled={matchStatus === 'loading' || ratingSaveStatus === 'saving'}
                       >
-                        {matchStatus === 'loading' ? 'Finding matches…' : 'Refresh my matches'} <Sparkles size={16} />
+                        {ratingSaveStatus === 'saving' ? 'Saving preferences…' : matchStatus === 'loading' ? 'Finding matches…' : JSON.stringify(weights) !== JSON.stringify(profile.weights) ? 'Save and find matches' : 'Refresh my matches'} <Sparkles size={16} />
                       </button>
                       <button className="secondary-btn full" style={{ marginTop: 9 }} onClick={() => openPage('Family profile')}>
                         Edit family profile
@@ -2809,17 +2871,34 @@ export function App() {
                     <span className="result-count">Showing {Math.min(ranked.length, 10)} matches</span>
                   </div>
 
-                  {matchStatus === 'idle' && (
+                  {matchIsOutdated && ranked.length > 0 && <p className="notice matches-outdated" role="status">
+                    <span><b>These results are out of date.</b><br />They still represent the preferences saved for the previous match run.</span>
+                  </p>}
+                  {ratingSaveStatus === 'error' && ranked.length > 0 && <p className="notice matches-error" role="alert">
+                    <span><b>Your importance ratings were not saved.</b><br />{ratingSaveMessage}</span>
+                    <button className="secondary-btn" type="button" onClick={() => saveEditedRatings()}>Retry save</button>
+                  </p>}
+                  {ratingSaveStatus === 'saving' && <p className="fine-print" role="status">{ratingSaveMessage}</p>}
+                  {matchStatus === 'error' && ranked.length > 0 && <p className="notice matches-error" role="alert">
+                    <span><b>Could not refresh matches.</b><br />{matchMessage}</span>
+                    <button className="secondary-btn" type="button" onClick={retryMatching} disabled={ratingSaveStatus === 'saving'}>Retry matching</button>
+                  </p>}
+                  {matchStatus === 'loading' && ranked.length > 0 && <p className="fine-print" role="status">Finding updated matches… Previous results remain visible until the new run succeeds.</p>}
+
+                  {ratingSaveStatus === 'error' && ranked.length === 0 && (
+                    <Empty title="Could not save preferences" text={ratingSaveMessage} action={() => saveEditedRatings()} actionLabel="Retry save" />
+                  )}
+                  {matchStatus === 'idle' && ratingSaveStatus !== 'error' && (
                     <Empty
                       title="Ready when you are"
                       text="Choose your child's level, enter your home postal code and press Find my matches."
                     />
                   )}
-                  {matchStatus === 'loading' && (
+                  {matchStatus === 'loading' && ranked.length === 0 && (
                     <Empty title="Working on it" text={matchMessage} />
                   )}
-                  {matchStatus === 'error' && (
-                    <Empty title="Could not load matches" text={matchMessage} />
+                  {matchStatus === 'error' && ranked.length === 0 && ratingSaveStatus !== 'error' && (
+                    <Empty title="Could not load matches" text={matchMessage} action={retryMatching} actionLabel={ratingSaveStatus === 'error' ? 'Retry save' : 'Retry matching'} />
                   )}
                   {matchStatus === 'done' && ranked.length === 0 && (
                     <Empty
@@ -2828,14 +2907,14 @@ export function App() {
                     />
                   )}
 
-                  {matchStatus === 'done' && summaryNarrative && (
+                  {ranked.length > 0 && summaryNarrative && (
                     <section className="match-explanation-summary" aria-labelledby="match-explanation-heading">
                       <h3 id="match-explanation-heading">Why these matches</h3>
                       <p>{summaryNarrative}</p>
                     </section>
                   )}
 
-                  {matchStatus === 'done' && ranked.length > 0 && (
+                  {['done', 'loading', 'error'].includes(matchStatus) && ranked.length > 0 && (
                     <MatchesCommute centres={ranked.slice(0, 10)} currentUser={currentUser} profileId={profileId}
                       profile={profile} onSignIn={() => setAuthMode('login')}>
                       {(commuteFor) => ranked.slice(0, 10).map((centre, index) => {
@@ -3489,7 +3568,7 @@ function PageTitle({ eyebrow, title, subtitle }) {
   );
 }
 
-function Empty({ title, text, action }) {
+function Empty({ title, text, action, actionLabel = 'Browse directory' }) {
   return (
     <div className="empty-state">
       <div className="empty-icon"><Search size={25} /></div>
@@ -3497,7 +3576,7 @@ function Empty({ title, text, action }) {
       <p>{text}</p>
       {action && (
         <button className="primary-btn" onClick={action}>
-          Browse directory <ChevronRight size={16} />
+          {actionLabel} <ChevronRight size={16} />
         </button>
       )}
     </div>
