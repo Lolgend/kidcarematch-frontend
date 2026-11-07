@@ -143,6 +143,54 @@ function isCertifiedComparison({ data, sample, mode, profileId, legs, expectedLe
     sameMetric(viaDistance, sample.totals.distance_meters);
 }
 
+/** Shared, fail-closed commute summary for matches, details and comparison. */
+export function summarizeCommute({ data, profileId, mode = "drive", directBaselineStatus = "disabled", workplaceConfigured }) {
+  const samples = Array.isArray(data?.samples) ? data.samples.filter((item) => item && typeof item === "object") : [];
+  const sample = mode === "pt" ? samples.find((item) => item.kind === "weekday") || null : samples[0] || null;
+  const hasConfiguredWorkplace = workplaceConfigured ?? Boolean(
+    data?.anchors?.workplace || (Array.isArray(sample?.legs) && sample.legs.some((leg) => leg?.to_anchor === "workplace"))
+  );
+  const legs = (Array.isArray(sample?.legs) ? sample.legs : []).filter((leg) => leg && typeof leg === "object")
+    .filter((leg) => hasConfiguredWorkplace || leg.to_anchor !== "workplace");
+  const expectedLegs = hasConfiguredWorkplace
+    ? [["home", "centre"], ["centre", "workplace"]]
+    : [["home", "centre"]];
+  const hasExpectedLegs = legs.length === expectedLegs.length && legs.every((leg, index) =>
+    leg.from_anchor === expectedLegs[index][0] && leg.to_anchor === expectedLegs[index][1]
+  );
+  const hasCompleteTotals = Boolean(
+    hasExpectedLegs && legs.every(isUsableRouteLeg) &&
+    (mode !== "pt" || legs.every(elapsedDurationMatchesTimestamps)) &&
+    sample?.via_status !== "partial" && sample?.via_status !== "unavailable" &&
+    hasNonnegativeMetric(sample?.totals?.duration_seconds) &&
+    hasNonnegativeMetric(sample?.totals?.distance_meters) &&
+    sameMetric(legs.reduce((total, leg) => total + leg.duration_seconds, 0), sample.totals.duration_seconds) &&
+    sameMetric(legs.reduce((total, leg) => total + leg.distance_meters, 0), sample.totals.distance_meters)
+  );
+  const baselineReady = hasNegotiatedBaseline({ data, sample, profileId, mode, directBaselineStatus });
+  const directRoute = sample?.direct_route;
+  const hasDirectRoute = baselineReady && completeRoute(directRoute, "home", "workplace");
+  const comparisonAvailable = isCertifiedComparison({
+    data, sample, mode, profileId, legs, expectedLegs, hasCompleteTotals, hasConfiguredWorkplace,
+    hasNegotiatedBaseline: baselineReady,
+  });
+  const signedDeviationSeconds = comparisonAvailable
+    ? sample.totals.duration_seconds - directRoute.totals.duration_seconds
+    : null;
+  const deviationHeadline = signedDeviationSeconds === null ? null
+    : signedDeviationSeconds <= 0 ? "No extra travel"
+      : signedDeviationSeconds < 60 ? "Less than 1 min extra travel"
+        : `${Math.floor(signedDeviationSeconds / 60 + 0.5)} min extra travel`;
+  return {
+    sample, legs, expectedLegs, hasConfiguredWorkplace, hasCompleteTotals, baselineReady,
+    directRoute, hasDirectRoute, comparisonAvailable, signedDeviationSeconds, deviationHeadline,
+    homeTravelSeconds: !hasConfiguredWorkplace && hasCompleteTotals ? sample.totals.duration_seconds : null,
+    homeTravelDistanceMeters: !hasConfiguredWorkplace && hasCompleteTotals ? sample.totals.distance_meters : null,
+    directFailureMessage: baselineReady ? directRouteFailureMessage(directRoute) : null,
+    directFailureRetryable: baselineReady && Array.isArray(directRoute?.reasons) && directRoute.reasons.some((reason) => reason?.retryable === true),
+  };
+}
+
 function routeArrow(geometry) {
   const startIndex = Math.max(0, Math.floor((geometry.length - 2) / 2));
   const start = geometry[startIndex];
@@ -222,16 +270,11 @@ export function CentreCommuteView({
   const routeAuthError = isEndpointAuthorizationError(error);
   const activeData = routeAuthError ? null :
     data || (activeCentreId != null ? setData?.[String(activeCentreId)] : null) || null;
-  const samples = Array.isArray(activeData?.samples) ? activeData.samples.filter((item) => item && typeof item === "object") : [];
-  const sample = mode === "pt"
-    ? samples.find((item) => item.kind === "weekday") || null
-    : samples[0] || null;
+  const summary = summarizeCommute({ data: activeData, profileId, mode, directBaselineStatus, workplaceConfigured });
+  const { sample, legs, expectedLegs, hasConfiguredWorkplace, hasCompleteTotals, directRoute,
+    hasDirectRoute, comparisonAvailable, signedDeviationSeconds, deviationHeadline,
+    directFailureMessage, directFailureRetryable } = summary;
   const currentSampleKind = sample?.kind || "single";
-  const hasConfiguredWorkplace = workplaceConfigured ?? Boolean(
-    activeData?.anchors?.workplace || (Array.isArray(sample?.legs) && sample.legs.some((leg) => leg?.to_anchor === "workplace"))
-  );
-  const legs = (Array.isArray(sample?.legs) ? sample.legs : []).filter((leg) => leg && typeof leg === "object")
-    .filter((leg) => hasConfiguredWorkplace || leg.to_anchor !== "workplace");
 
   // Check for unresolvable postal code messages
   const unresolvableLeg = legs.find(
@@ -253,41 +296,6 @@ export function CentreCommuteView({
     : workplaceUnresolvable
     ? "Your configured workplace location could not be resolved. Edit your family profile to update it."
     : null;
-  const expectedLegs = hasConfiguredWorkplace
-    ? [["home", "centre"], ["centre", "workplace"]]
-    : [["home", "centre"]];
-  const hasExpectedLegs = legs.length === expectedLegs.length && legs.every((leg, index) =>
-    leg.from_anchor === expectedLegs[index][0] && leg.to_anchor === expectedLegs[index][1]
-  );
-  const hasCompleteTotals = Boolean(
-    hasExpectedLegs && legs.every(isUsableRouteLeg) &&
-    (mode !== "pt" || legs.every(elapsedDurationMatchesTimestamps)) &&
-    sample?.via_status !== "partial" && sample?.via_status !== "unavailable" &&
-    hasNonnegativeMetric(sample?.totals?.duration_seconds) &&
-    hasNonnegativeMetric(sample?.totals?.distance_meters) &&
-    sameMetric(legs.reduce((total, leg) => total + leg.duration_seconds, 0), sample.totals.duration_seconds) &&
-    sameMetric(legs.reduce((total, leg) => total + leg.distance_meters, 0), sample.totals.distance_meters)
-  );
-  const directRoute = sample?.direct_route;
-  const baselineReady = hasNegotiatedBaseline({ data: activeData, sample, profileId, mode, directBaselineStatus });
-  const hasDirectRoute = baselineReady && completeRoute(directRoute, "home", "workplace");
-  const directFailureMessage = baselineReady ? directRouteFailureMessage(directRoute) : null;
-  const directFailureRetryable = baselineReady && Array.isArray(directRoute?.reasons) &&
-    directRoute.reasons.some((reason) => reason?.retryable === true);
-  const comparisonAvailable = isCertifiedComparison({
-    data: activeData, sample, mode, profileId, legs, expectedLegs, hasCompleteTotals, hasConfiguredWorkplace,
-    hasNegotiatedBaseline: baselineReady,
-  });
-  const signedDeviationSeconds = comparisonAvailable
-    ? sample.totals.duration_seconds - directRoute.totals.duration_seconds
-    : null;
-  const deviationHeadline = signedDeviationSeconds === null
-    ? null
-    : signedDeviationSeconds <= 0
-    ? "No extra travel"
-    : signedDeviationSeconds < 60
-    ? "Less than 1 min extra travel"
-    : `${Math.floor(signedDeviationSeconds / 60 + 0.5)} min extra travel`;
 
   // Determine center coordinates for MapContainer
   const availableLegsWithGeometry = legs.filter(

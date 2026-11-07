@@ -48,9 +48,26 @@ vi.mock("react-leaflet", () => ({
 vi.mock("leaflet/dist/leaflet.css", () => ({}));
 vi.mock("leaflet", () => ({ divIcon: (options) => options }));
 
-import { CentreCommuteView } from "../../src/commute/CentreCommute.jsx";
+import { CentreCommuteView, summarizeCommute } from "../../src/commute/CentreCommute.jsx";
 
 describe("CentreCommute presentation", () => {
+  it("exposes the shared home-only summary for matches and details without inventing a workplace deviation", () => {
+    const summary = summarizeCommute({
+      profileId: "prof-1", mode: "drive", workplaceConfigured: false,
+      data: {
+        profile_id: "prof-1", mode: "drive",
+        anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 } },
+        samples: [{ kind: "single", via_status: "available",
+          legs: [{ from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap", duration_seconds: 600, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }] }],
+          totals: { duration_seconds: 600, distance_meters: 5000 } }],
+      },
+    });
+    expect(summary.homeTravelSeconds).toBe(600);
+    expect(summary.homeTravelDistanceMeters).toBe(5000);
+    expect(summary.signedDeviationSeconds).toBeNull();
+    expect(summary.deviationHeadline).toBeNull();
+  });
+
   it("keeps usable current-context routes visible while refreshing or showing an independent error", () => {
     const activeData = {
       centre_id: 101, profile_id: "prof-1", mode: "drive",
