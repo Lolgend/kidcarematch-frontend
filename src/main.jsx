@@ -534,6 +534,7 @@ function App() {
   const [compareSelectedIds, setCompareSelectedIds] = useState([]);
   const [compareStep, setCompareStep] = useState('selection');
   const [compareQuery, setCompareQuery] = useState('');
+  const [compareDistricts, setCompareDistricts] = useState([]);
   const [compareWatchlistOnly, setCompareWatchlistOnly] = useState(false);
   const [compareDirectoryCentres, setCompareDirectoryCentres] = useState([]);
   const [compareDirectoryStatus, setCompareDirectoryStatus] = useState('idle');
@@ -1960,6 +1961,7 @@ function App() {
         if (/^\d+$/.test(term)) params.postal_prefix = term;
         else params.query = term;
       }
+      if (compareDistricts.length) params.district = compareDistricts;
       try {
         const first = await getCentres(params);
         const firstItems = Array.isArray(first) ? first : first?.items;
@@ -1990,7 +1992,7 @@ function App() {
     };
     run();
     return () => { cancelled = true; };
-  }, [page, compareQuery, compareDirectoryReload]);
+  }, [page, compareQuery, compareDistricts, compareDirectoryReload]);
 
   const compareOptions = useMemo(() => compareWatchlistOnly
     ? compareDirectoryCentres.filter((centre) => saved.map(String).includes(String(centre.id)))
@@ -2855,8 +2857,12 @@ function App() {
                       type="search"
                       value={compareQuery}
                       onChange={(event) => setCompareQuery(event.target.value)}
-                      placeholder="Name, area or postal code"
+                      placeholder="Centre name or postal code"
                     />
+                    <div className="compare-area-filter">
+                      <span>Area</span>
+                      <DistrictMultiSelect districts={districts} selected={compareDistricts} onChange={setCompareDistricts} />
+                    </div>
                     <div className="compare-picker-toolbar">
                       <label className="compare-filter">
                         <input type="checkbox" checked={compareWatchlistOnly} onChange={(event) => setCompareWatchlistOnly(event.target.checked)} />

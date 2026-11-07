@@ -93,6 +93,16 @@ describe("shared API request harness", () => {
     );
   });
 
+  it("sends each selected area district to the directory endpoint", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, { items: [], total: 0, limit: 100, offset: 0 }));
+
+    await api.getCentres({ district: [1, 2], limit: 100, offset: 0 });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://api.invalid/api/v1/centres?district=1&district=2&limit=100&offset=0",
+    );
+  });
+
   it("returns an empty result for an empty directory response", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(vi, []));
 
