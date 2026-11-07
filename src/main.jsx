@@ -22,6 +22,7 @@ import { auth } from './firebase';
 import AdminDashboard from './admin/AdminDashboard';
 import CentreCommute from './commute/CentreCommute';
 import MatchesCommute from './commute/MatchesCommute.jsx';
+import CentreComparisonTable from './CentreComparisonTable.jsx';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
 import { centreDetailsPath, centreIdFromPath } from './centreDetailsRoute';
@@ -574,6 +575,15 @@ function App() {
   }, [authResolved, currentUser?.uid]);
 
   const [compareDetails, setCompareDetails] = useState({});
+  const [compareDetailRetries, setCompareDetailRetries] = useState({});
+  const compareDetailRequestRef = useRef(0);
+  const compareDetailSelectionKeyRef = useRef('');
+  const compareDetailSelectionGenerationRef = useRef(0);
+  const renderedCompareSelectionKey = compareSelectedIds.map(String).join('\u0000');
+  if (compareDetailSelectionKeyRef.current !== renderedCompareSelectionKey) {
+    compareDetailSelectionKeyRef.current = renderedCompareSelectionKey;
+    compareDetailSelectionGenerationRef.current += 1;
+  }
   const [budget, setBudget] = useState(750);
   const [matchForm, setMatchForm] = useState({ level: 'n1', citizenship: 'SC', home: '', work: '' });
   const [matchRun, setMatchRun] = useState(null); // the inputs the current results were fetched for
@@ -2006,19 +2016,60 @@ function App() {
     [compareSelectedIds, centreLookup]
   );
 
-  // Fetch the full profile (transport, fees, vacancies) of each selected centre.
+  const retryCompareDetails = (centreId) => {
+    const key = String(centreId);
+    setCompareDetails((current) => ({ ...current, [key]: { error: 'Retrying centre details…' } }));
+    setCompareDetailRetries((current) => ({ ...current, [key]: (current[key] || 0) + 1 }));
+  };
+
+  const removeComparedCentre = (centreId) => {
+    const next = compareSelectedIds.filter((id) => String(id) !== String(centreId));
+    setCompareSelectedIds(next);
+    if (next.length < 2) {
+      setCompareStep('selection');
+      window.scrollTo(0, 0);
+    }
+  };
+
+  // Fetch each selected centre independently so a failure in one column cannot block another.
   useEffect(() => {
+    if (page !== 'Compare centres' || compareStep !== 'comparison') return;
+    if (!authResolved || (currentUser?.uid || null) !== activeAccountIdRef.current) return;
+    const accountId = activeAccountIdRef.current;
+    const selectionKey = compareDetailSelectionKeyRef.current;
+    const selectionGeneration = compareDetailSelectionGenerationRef.current;
     compareCentres.forEach((centre) => {
       const key = String(centre.id);
-      if (compareDetails[key]) return;
-      setCompareDetails((current) => (current[key] ? current : { ...current, [key]: { loading: true } }));
+      const retry = compareDetailRetries[key] || 0;
+      const previous = compareDetails[key];
+      if (previous?.data && previous.accountId === accountId) return;
+      if (previous?.error && previous.accountId === accountId && previous.retry === retry) return;
+      if (previous?.loading && previous.accountId === accountId && previous.retry === retry && previous.selectionGeneration === selectionGeneration) return;
+
+      const requestId = ++compareDetailRequestRef.current;
+      setCompareDetails((current) => ({
+        ...current,
+        [key]: { loading: true, accountId, retry, selectionGeneration, requestId }
+      }));
 
       const request = centre.centre_code ? getCentreByCode(centre.centre_code) : getCentreById(centre.id);
       request
-        .then((detail) => setCompareDetails((current) => ({ ...current, [key]: { data: detail } })))
-        .catch((error) => setCompareDetails((current) => ({ ...current, [key]: { error: error.message } })));
+        .then((detail) => {
+          if (activeAccountIdRef.current !== accountId || compareDetailSelectionGenerationRef.current !== selectionGeneration || compareDetailSelectionKeyRef.current !== selectionKey) return;
+          if (!compareSelectedIds.some((id) => String(id) === key)) return;
+          setCompareDetails((current) => current[key]?.requestId === requestId
+            ? { ...current, [key]: { data: detail, accountId } }
+            : current);
+        })
+        .catch((error) => {
+          if (activeAccountIdRef.current !== accountId || compareDetailSelectionGenerationRef.current !== selectionGeneration || compareDetailSelectionKeyRef.current !== selectionKey) return;
+          if (!compareSelectedIds.some((id) => String(id) === key)) return;
+          setCompareDetails((current) => current[key]?.requestId === requestId
+            ? { ...current, [key]: { error: error?.message || 'Could not load centre details.', accountId, retry } }
+            : current);
+        });
     });
-  }, [compareCentres]);
+  }, [page, compareStep, authResolved, currentUser?.uid, compareCentres, compareSelectedIds, compareDetails, compareDetailRetries]);
 
   const resetFilters = () => {
     setQuery('');
@@ -2919,102 +2970,14 @@ function App() {
                     text="Select one or more centres above. Their details will appear here."
                   />
                 ) : (
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: `repeat(${compareCentres.length}, minmax(240px, 1fr))`,
-                      gap: 16,
-                      overflowX: 'auto',
-                      alignItems: 'start'
-                    }}
-                  >
-                    {compareCentres.map((listCentre) => {
-                      const entry = compareDetails[String(listCentre.id)] || {};
-                      const detail = entry.data;
-                      const centre = detail ? { ...listCentre, ...detail, id: listCentre.id, name: listCentre.name } : listCentre;
-                      const services = detail?.services ?? [];
-                      const vacancies = detail?.vacancies ?? [];
-                      const fees = services.map((item) => Number(item.fee)).filter(Number.isFinite);
-                      return (
-                      <article className="panel" key={centre.id} style={{ padding: 20 }}>
-                        <h3>{centre.name}</h3>
-                        <p>{centre.address || 'Address not provided'}</p>
-
-                        <hr />
-
-                        <p><strong>Centre code</strong><br />{centre.centre_code || 'Not provided'}</p>
-                        <p><strong>Contact</strong><br />{centre.contact || 'Not provided'}</p>
-                        <p><strong>Email</strong><br />{centre.email || 'Not provided'}</p>
-                        <p>
-                          <strong>Website</strong><br />
-                          {centre.website_url ? (
-                            <a href={websiteHref(centre.website_url)} target="_blank" rel="noreferrer">
-                              Visit website
-                            </a>
-                          ) : 'Not provided'}
-                        </p>
-                        <p><strong>SPARK certified</strong><br />{yesNo(centre.spark_certified)}</p>
-                        <p><strong>Government subsidy</strong><br />{yesNo(centre.gov_subsidy)}</p>
-                        <p>
-                          <strong>Transport provided</strong><br />
-                          {entry.loading ? 'Loading…' : yesNo(centre.transport_provided)}
-                        </p>
-                        <p>
-                          <strong>Extended hours</strong><br />
-                          {yesNo(centre.extended_operating_hours)}
-                        </p>
-                        <p><strong>Weekday hours</strong><br />{centre.weekday_full_day_hours || 'Not provided'}</p>
-                        <p><strong>Saturday hours</strong><br />{centre.saturday_hours || 'Not provided'}</p>
-                        <p>
-                          <strong>Monthly fees</strong><br />
-                          {entry.loading
-                            ? 'Loading…'
-                            : fees.length
-                              ? `${money(Math.min(...fees))}${Math.min(...fees) === Math.max(...fees) ? '' : ` – ${money(Math.max(...fees))}`}`
-                              : 'Fee data unavailable'}
-                        </p>
-                        {services.length > 0 && (
-                          <div style={{ maxHeight: 160, overflowY: 'auto', fontSize: 13, marginBottom: 12 }}>
-                            {services.map((item) => (
-                              <div key={item.service_id ?? `${item.level}-${item.citizenship_type}-${item.type_of_service}`}>
-                                {levelLabel(item.level)} · {item.citizenship_type} · {money(item.fee)}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        <p>
-                          <strong>Vacancies</strong><br />
-                          {entry.loading ? 'Loading…' : vacancies.length ? '' : 'None listed'}
-                        </p>
-                        {vacancies.length > 0 && (
-                          <div style={{ maxHeight: 160, overflowY: 'auto', fontSize: 13, marginBottom: 12 }}>
-                            {vacancies.map((item, index) => (
-                              <div key={item.record_id ?? index}>
-                                {levelLabel(item.level_type)} · {monthYear(item.enrollment_month_year)} · {item.vacancy_status}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {entry.error && <p className="fine-print">Could not load full details: {entry.error}</p>}
-
-                        <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
-                          View full details
-                        </button>
-
-                        <button
-                          className="text-btn"
-                          onClick={() =>
-                            setCompareSelectedIds((items) =>
-                              items.filter((id) => id !== String(centre.id))
-                            )
-                          }
-                        >
-                          Remove from comparison
-                        </button>
-                      </article>
-                      );
-                    })}
-                  </div>
+                  <CentreComparisonTable
+                    centres={compareCentres}
+                    details={compareDetails}
+                    profile={profile}
+                    onRetry={retryCompareDetails}
+                    onViewDetails={openCentreDetails}
+                    onRemove={removeComparedCentre}
+                  />
                 )}
               </section>}
             </>
