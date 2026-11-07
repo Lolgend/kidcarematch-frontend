@@ -3,6 +3,7 @@ import { divIcon } from "leaflet";
 import { MapContainer, TileLayer, Marker, Popup, Polyline } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import CentreLocationMap from "./CentreLocationMap.jsx";
+import MapAnchorMarker from "./MapAnchorMarker.jsx";
 import { useCommuteSession } from "./commuteSession.js";
 import {
   getCentreCommute as defaultGetCentreCommute,
@@ -319,9 +320,9 @@ export function CentreCommuteView({
     <MapContainer center={mapCoordinates[0]} zoom={13} zoomAnimation={false} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
       <MapViewportController coordinates={mapCoordinates} />
       <TileLayer attribution='&copy; <a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener noreferrer">OneMap</a> &copy; Singapore Land Authority' url="https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png" maxZoom={19} minZoom={11} />
-      {hasCoordinate(activeData.anchors?.home) && <Marker position={[activeData.anchors.home.lat, activeData.anchors.home.lng]} alt="Home" title="Home"><Popup><strong>Home</strong></Popup></Marker>}
-      {hasCoordinate(activeData.anchors?.centre) && <Marker position={[activeData.anchors.centre.lat, activeData.anchors.centre.lng]} alt="Centre" title="Centre"><Popup><strong>Centre</strong>{centreName ? `: ${centreName}` : ""}</Popup></Marker>}
-      {hasCoordinate(activeData.anchors?.workplace) && <Marker position={[activeData.anchors.workplace.lat, activeData.anchors.workplace.lng]} alt="Workplace" title="Workplace"><Popup><strong>Workplace</strong></Popup></Marker>}
+      {hasCoordinate(activeData.anchors?.home) && <MapAnchorMarker kind="home" position={[activeData.anchors.home.lat, activeData.anchors.home.lng]} popup={<Popup><strong>Home</strong></Popup>} />}
+      {hasCoordinate(activeData.anchors?.centre) && <MapAnchorMarker kind="centre" position={[activeData.anchors.centre.lat, activeData.anchors.centre.lng]} popup={<Popup><strong>Centre</strong>{centreName ? `: ${centreName}` : ""}</Popup>} />}
+      {hasCoordinate(activeData.anchors?.workplace) && <MapAnchorMarker kind="work" position={[activeData.anchors.workplace.lat, activeData.anchors.workplace.lng]} popup={<Popup><strong>Work</strong></Popup>} />}
       {availableLegsWithGeometry.map((leg, idx) => { const routeKey = idx === 0 ? "home-centre" : "centre-workplace"; const color = idx === 0 ? "#2563eb" : "#07805f"; const arrow = routeArrow(leg.geometry); return <React.Fragment key={`${currentSampleKind}-${idx}`}><Polyline positions={leg.geometry.map((c) => [c.lat, c.lng])} pathOptions={{ color, ...routeVisibility(routeKey) }} /><Marker position={arrow.position} icon={arrow.icon} interactive={false} /></React.Fragment>; })}
       {hasDirectRoute && <><Polyline key="direct-route" positions={directRoute.legs[0].geometry.map((c) => [c.lat, c.lng])} pathOptions={{ color: "#59636e", weight: 3, dashArray: "10, 8", ...routeVisibility("direct") }} /><Marker position={routeArrow(directRoute.legs[0].geometry).position} icon={routeArrow(directRoute.legs[0].geometry).icon} interactive={false} /></>}
     </MapContainer>
