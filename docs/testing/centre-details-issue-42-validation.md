@@ -14,10 +14,10 @@ The temp-only `run-issue42.mjs` harness used fabricated same-origin API response
 
 | Baseline | Sampling | Rendered outcome | URL / page errors |
 | --- | --- | --- | --- |
-| Off | Off | Comparison unavailable; via total 30 mins | `/centres/3401`; none |
-| On | Off | 20 min extra travel; direct and via totals | `/centres/3401`; none |
-| Off | On | Comparison unavailable; via total 30 mins | `/centres/3401`; none |
-| On | On | 20 min extra travel; direct and via totals | `/centres/3401`; none |
+| Off | Off | Comparison unavailable; via total 42 mins | `/centres/3401`; none |
+| On | Off | 12 min extra travel; direct and via totals | `/centres/3401`; none |
+| Off | On | Comparison unavailable; via total 42 mins | `/centres/3401`; none |
+| On | On | 12 min extra travel; direct and via totals | `/centres/3401`; none |
 
 The both-enabled flow was also checked at mobile viewport `390×844`. Browser assertions found route legend entries for the direct baseline, home-to-centre, centre-to-workplace, and show-all controls; the journey breakdown was accessible, the URL contained no query parameters, and no commute result was persisted. The UI exposed no weekday, sample date, or sample time. Direct-only legacy behavior and selected-only behavior remained distinct in the other two enabled combinations.
 

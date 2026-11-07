@@ -131,7 +131,7 @@
 .centre-details-page .parent-reviews{margin-top:24px;padding:24px}
 .centre-details-loading,.centre-details-error{padding:38px;background:#fff;border:1px solid #e6ece3;border-radius:16px;color:#65756a}
 .centre-details-error h1{margin:0 0 8px;color:#2f4435}
-@media(max-width:900px){.centre-details-grid{grid-template-columns:1fr}.centre-details-facts{order:2}}
+@media(max-width:767px){.centre-details-grid{grid-template-columns:1fr}.centre-details-facts{order:2}}
 @media(max-width:700px){.centre-details-page{padding:18px 16px 40px}.centre-details-return{margin-bottom:18px}.centre-details-heading{margin-bottom:20px}.centre-details-primary{padding:10px}.centre-details-primary .centre-map-wrapper{min-height:280px;aspect-ratio:auto}.centre-details-primary .centre-map-section>.centre-map-unavailable,.centre-details-primary .centre-map-section>.centre-map-loading{min-height:280px;aspect-ratio:auto}.centre-details-page .parent-reviews{padding:17px}.centre-details-facts{padding:19px}}
 
 

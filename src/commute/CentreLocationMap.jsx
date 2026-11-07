@@ -10,6 +10,7 @@ export function CentreLocationMapView({
   centreName,
   currentUser,
   onSignIn,
+  summaryTarget = false,
 }) {
   const coordinate = location?.coordinate;
   const isAvailable =
@@ -62,6 +63,9 @@ export function CentreLocationMapView({
         <div
           className="centre-commute-guest-prompt"
           data-testid="commute-guest-prompt"
+          id={summaryTarget ? "centre-commute-summary" : undefined}
+          tabIndex={summaryTarget ? -1 : undefined}
+          aria-label={summaryTarget ? "Commute details" : undefined}
         >
           <p>Sign in to see personalised commute routes and travel times.</p>
           {onSignIn && (
@@ -86,6 +90,7 @@ export default function CentreLocationMap({
   currentUser = null,
   onSignIn = null,
   getCentreLocation,
+  summaryTarget = false,
 }) {
   const { loading, location } = useCentreLocation(centreId, {
     getCentreLocation,
@@ -98,6 +103,7 @@ export default function CentreLocationMap({
       centreName={centreName}
       currentUser={currentUser}
       onSignIn={onSignIn}
+      summaryTarget={summaryTarget}
     />
   );
 }

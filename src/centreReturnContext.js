@@ -1,6 +1,29 @@
 const STORAGE_KEY = 'kidcare:centre-return:v1';
 const TAB_KEY = 'kidcare:tab:v1';
 const CHANNEL_NAME = 'kidcare:tab-context:v1';
+const HOME_QUERY_TOKEN = '{{kidcare-owned-home}}';
+const WORK_QUERY_TOKEN = '{{kidcare-owned-work}}';
+
+export function protectCentreReturnQuery(query, profile) {
+  let safeQuery = String(query || '');
+  for (const [value, marker] of [[profile?.home, HOME_QUERY_TOKEN], [profile?.work, WORK_QUERY_TOKEN]]) {
+    if (typeof value === 'string' && value.trim()) safeQuery = safeQuery.split(value).join(marker);
+  }
+  return safeQuery;
+}
+
+export function restoreCentreReturnQuery(context, profile) {
+  let query = String(context?.query || '');
+  if (query.includes(HOME_QUERY_TOKEN)) {
+    if (!profile?.home) return '';
+    query = query.split(HOME_QUERY_TOKEN).join(String(profile.home));
+  }
+  if (query.includes(WORK_QUERY_TOKEN)) {
+    if (!profile?.work) return '';
+    query = query.split(WORK_QUERY_TOKEN).join(String(profile.work));
+  }
+  return query;
+}
 
 function token() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;

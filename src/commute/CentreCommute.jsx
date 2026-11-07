@@ -10,6 +10,7 @@ import {
   getCentreLocation as defaultGetCentreLocation,
 } from "../api";
 import MapViewportController from "./MapViewportController.jsx";
+import { isEndpointAuthorizationError, isNonEmptyString, isUsableRouteLeg } from "./commuteContract.js";
 
 export function formatDuration(secs) {
   if (typeof secs !== "number") return "";
@@ -35,25 +36,6 @@ function hasNonnegativeMetric(value) {
   return Number.isFinite(value) && value >= 0;
 }
 
-function hasUsableGeometry(leg) {
-  return Array.isArray(leg?.geometry) && leg.geometry.length >= 2 && leg.geometry.every(
-    (point) => Number.isFinite(point?.lat) && point.lat >= -90 && point.lat <= 90 &&
-      Number.isFinite(point?.lng) && point.lng >= -180 && point.lng <= 180
-  );
-}
-
-function isUsableRouteLeg(leg) {
-  return leg?.status === "available" &&
-    isNonEmptyString(leg.source) &&
-    hasNonnegativeMetric(leg.duration_seconds) &&
-    hasNonnegativeMetric(leg.distance_meters) &&
-    hasUsableGeometry(leg);
-}
-
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 function hasTimezoneTimestamp(value) {
   return typeof value === "string" && /T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value) &&
     Number.isFinite(Date.parse(value));
@@ -64,21 +46,36 @@ function hasCoordinate(point) {
     Number.isFinite(point?.lng) && point.lng >= -180 && point.lng <= 180;
 }
 
-function isEndpointAuthorizationError(error) {
-  if (error?.failureClass === "service" || error?.code === "provider_auth_failed") return false;
-  return error?.failureClass === "authentication" || error?.status === 401 || error?.status === 403;
-}
-
 function sameMetric(left, right) {
   return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) < 0.001;
 }
 
+function elapsedDurationMatchesTimestamps(leg) {
+  const hasDeparture = leg?.departure_at != null;
+  const hasArrival = leg?.arrival_at != null;
+  if ((hasDeparture && !hasTimezoneTimestamp(leg.departure_at)) ||
+      (hasArrival && !hasTimezoneTimestamp(leg.arrival_at))) return false;
+  if (!hasDeparture || !hasArrival) return true;
+  return sameMetric((Date.parse(leg.arrival_at) - Date.parse(leg.departure_at)) / 1000, leg.duration_seconds);
+}
+
+function directRouteFailureMessage(directRoute) {
+  if (directRoute?.status !== "unavailable") return null;
+  const codes = Array.isArray(directRoute.reasons) ? directRoute.reasons.map((reason) => reason?.code) : [];
+  if (codes.includes("provider_timeout")) return "The direct route estimate timed out.";
+  if (codes.includes("provider_unavailable")) return "The direct route estimate is temporarily unavailable.";
+  if (codes.includes("no_itinerary")) return "No direct route was found for these conditions.";
+  if (codes.includes("timing_unverified")) return "Direct route timing could not be verified.";
+  return "The direct route estimate is unavailable.";
+}
+
 function completeRoute(route, from, to) {
-  const [leg] = route?.legs || [];
-  return route?.status === "available" && route.legs.length === 1 &&
+  const routeLegs = Array.isArray(route?.legs) ? route.legs : [];
+  const [leg] = routeLegs;
+  return route?.status === "available" && routeLegs.length === 1 && leg &&
     leg.from_anchor === from && leg.to_anchor === to && isUsableRouteLeg(leg) &&
     Array.isArray(route.reasons) && route.reasons.length === 0 &&
-    Array.isArray(leg.reasons) && leg.reasons.length === 0 &&
+      Array.isArray(leg.reasons) && leg.reasons.length === 0 &&
     hasNonnegativeMetric(route.totals?.duration_seconds) &&
     hasNonnegativeMetric(route.totals?.distance_meters) &&
     sameMetric(route.totals.duration_seconds, leg.duration_seconds) &&
@@ -127,6 +124,7 @@ function isCertifiedComparison({ data, sample, mode, profileId, legs, expectedLe
         leg.source === source && Array.isArray(leg.reasons) && leg.reasons.length === 0)) return false;
   if (mode === "pt") {
     if (!requiredLegs.every((leg) => leg.timing?.initial_wait_included === true)) return false;
+    if (!requiredLegs.every(elapsedDurationMatchesTimestamps)) return false;
     const firstViaLeg = legs[0];
     const onwardLeg = legs[1];
     if (!hasTimezoneTimestamp(firstViaLeg?.departure_at) ||
@@ -189,6 +187,7 @@ export function CentreCommuteView({
         currentUser={currentUser}
         onSignIn={onSignIn}
         getCentreLocation={getCentreLocation}
+        summaryTarget
       />
     );
   }
@@ -203,7 +202,7 @@ export function CentreCommuteView({
           onSignIn={onSignIn}
           getCentreLocation={getCentreLocation}
         />
-        <div className="centre-commute-profile-prompt" role="status">
+        <div className="centre-commute-profile-prompt" id="centre-commute-summary" tabIndex={-1} aria-label="Commute details" role="status">
           <p>Please finish setting up your family profile to see personalised commute routes and travel times.</p>
           <button
             type="button"
@@ -222,21 +221,20 @@ export function CentreCommuteView({
   const routeAuthError = isEndpointAuthorizationError(error);
   const activeData = routeAuthError ? null :
     data || (activeCentreId != null ? setData?.[String(activeCentreId)] : null) || null;
-  const samples = Array.isArray(activeData?.samples) ? activeData.samples : [];
+  const samples = Array.isArray(activeData?.samples) ? activeData.samples.filter((item) => item && typeof item === "object") : [];
   const sample = mode === "pt"
     ? samples.find((item) => item.kind === "weekday") || null
     : samples[0] || null;
   const currentSampleKind = sample?.kind || "single";
   const hasConfiguredWorkplace = workplaceConfigured ?? Boolean(
-    activeData?.anchors?.workplace || sample?.legs?.some((leg) => leg.to_anchor === "workplace")
+    activeData?.anchors?.workplace || (Array.isArray(sample?.legs) && sample.legs.some((leg) => leg?.to_anchor === "workplace"))
   );
-  const legs = (sample?.legs || []).filter((leg) =>
-    hasConfiguredWorkplace || leg.to_anchor !== "workplace"
-  );
+  const legs = (Array.isArray(sample?.legs) ? sample.legs : []).filter((leg) => leg && typeof leg === "object")
+    .filter((leg) => hasConfiguredWorkplace || leg.to_anchor !== "workplace");
 
   // Check for unresolvable postal code messages
   const unresolvableLeg = legs.find(
-    (l) => l.status === "unavailable" && l.message && l.message.toLowerCase().includes("could not be resolved")
+    (l) => l.status === "unavailable" && typeof l.message === "string" && l.message.toLowerCase().includes("could not be resolved")
   );
   const homeAnchor = activeData?.anchors?.home;
   const hasHomeCoordinate = Number.isFinite(homeAnchor?.lat) && Number.isFinite(homeAnchor?.lng);
@@ -262,12 +260,19 @@ export function CentreCommuteView({
   );
   const hasCompleteTotals = Boolean(
     hasExpectedLegs && legs.every(isUsableRouteLeg) &&
+    (mode !== "pt" || legs.every(elapsedDurationMatchesTimestamps)) &&
+    sample?.via_status !== "partial" && sample?.via_status !== "unavailable" &&
     hasNonnegativeMetric(sample?.totals?.duration_seconds) &&
-    hasNonnegativeMetric(sample?.totals?.distance_meters)
+    hasNonnegativeMetric(sample?.totals?.distance_meters) &&
+    sameMetric(legs.reduce((total, leg) => total + leg.duration_seconds, 0), sample.totals.duration_seconds) &&
+    sameMetric(legs.reduce((total, leg) => total + leg.distance_meters, 0), sample.totals.distance_meters)
   );
   const directRoute = sample?.direct_route;
   const baselineReady = hasNegotiatedBaseline({ data: activeData, sample, profileId, mode, directBaselineStatus });
   const hasDirectRoute = baselineReady && completeRoute(directRoute, "home", "workplace");
+  const directFailureMessage = baselineReady ? directRouteFailureMessage(directRoute) : null;
+  const directFailureRetryable = baselineReady && Array.isArray(directRoute?.reasons) &&
+    directRoute.reasons.some((reason) => reason?.retryable === true);
   const comparisonAvailable = isCertifiedComparison({
     data: activeData, sample, mode, profileId, legs, expectedLegs, hasCompleteTotals, hasConfiguredWorkplace,
     hasNegotiatedBaseline: baselineReady,
@@ -287,13 +292,13 @@ export function CentreCommuteView({
   const availableLegsWithGeometry = legs.filter(
     isUsableRouteLeg
   );
-  const hasCentreCoordinate = Number.isFinite(activeData?.anchors?.centre?.lat) && Number.isFinite(activeData?.anchors?.centre?.lng);
+  const hasCentreCoordinate = hasCoordinate(activeData?.anchors?.centre);
   const mapCoordinates = [
     ...[activeData?.anchors?.home, activeData?.anchors?.centre, activeData?.anchors?.workplace]
-      .filter((point) => point && Number.isFinite(point.lat) && Number.isFinite(point.lng))
+      .filter(hasCoordinate)
       .map((point) => [point.lat, point.lng]),
     ...availableLegsWithGeometry.flatMap((leg) => leg.geometry
-      .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng))
+      .filter(hasCoordinate)
       .map((point) => [point.lat, point.lng])),
     ...(hasDirectRoute ? directRoute.legs[0].geometry.map((point) => [point.lat, point.lng]) : []),
   ];
@@ -302,8 +307,22 @@ export function CentreCommuteView({
     weight: highlightedRoute === key ? 8 : 5,
   });
 
+  const commuteMap = activeData ? (mapCoordinates.length > 0 && (hasCentreCoordinate || hasDirectRoute) ? <div className="centre-map-wrapper" data-testid="centre-commute-map">
+    <MapContainer center={mapCoordinates[0]} zoom={13} zoomAnimation={false} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
+      <MapViewportController coordinates={mapCoordinates} />
+      <TileLayer attribution='&copy; <a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener noreferrer">OneMap</a> &copy; Singapore Land Authority' url="https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png" maxZoom={19} minZoom={11} />
+      {hasCoordinate(activeData.anchors?.home) && <Marker position={[activeData.anchors.home.lat, activeData.anchors.home.lng]} alt="Home" title="Home"><Popup><strong>Home</strong></Popup></Marker>}
+      {hasCoordinate(activeData.anchors?.centre) && <Marker position={[activeData.anchors.centre.lat, activeData.anchors.centre.lng]} alt="Centre" title="Centre"><Popup><strong>Centre</strong>{centreName ? `: ${centreName}` : ""}</Popup></Marker>}
+      {hasCoordinate(activeData.anchors?.workplace) && <Marker position={[activeData.anchors.workplace.lat, activeData.anchors.workplace.lng]} alt="Workplace" title="Workplace"><Popup><strong>Workplace</strong></Popup></Marker>}
+      {availableLegsWithGeometry.map((leg, idx) => { const routeKey = idx === 0 ? "home-centre" : "centre-workplace"; const color = idx === 0 ? "#2563eb" : "#07805f"; const arrow = routeArrow(leg.geometry); return <React.Fragment key={`${currentSampleKind}-${idx}`}><Polyline positions={leg.geometry.map((c) => [c.lat, c.lng])} pathOptions={{ color, ...routeVisibility(routeKey) }} /><Marker position={arrow.position} icon={arrow.icon} interactive={false} /></React.Fragment>; })}
+      {hasDirectRoute && <><Polyline key="direct-route" positions={directRoute.legs[0].geometry.map((c) => [c.lat, c.lng])} pathOptions={{ color: "#59636e", weight: 3, dashArray: "10, 8", ...routeVisibility("direct") }} /><Marker position={routeArrow(directRoute.legs[0].geometry).position} icon={routeArrow(directRoute.legs[0].geometry).icon} interactive={false} /></>}
+    </MapContainer>
+  </div> : <div className="centre-map-unavailable" role="status">Map view is currently unavailable for this centre.</div>) : <CentreLocationMap centre={centre} currentUser={currentUser} getCentreLocation={getCentreLocation} />;
+
   return (
     <section className="centre-map-section" aria-label="Centre commute comparison">
+      {commuteMap}
+      <div id="centre-commute-summary" tabIndex={-1} aria-label="Commute details">
       {/* Travel mode selector */}
       <div className="commute-mode-selector" role="group" aria-label="Travel mode">
         <button
@@ -342,14 +361,12 @@ export function CentreCommuteView({
 
       {loading && !activeData && (
         <>
-          <CentreLocationMap centre={centre} currentUser={currentUser} getCentreLocation={getCentreLocation} />
           <div className="centre-map-loading" role="status">Loading commute route…</div>
         </>
       )}
 
       {error && !loading && !activeData && (
         <>
-          <CentreLocationMap centre={centre} currentUser={currentUser} getCentreLocation={getCentreLocation} />
           <div className="centre-map-unavailable" role="status">
             <p>{routeAuthError
               ? error.status === 401
@@ -398,13 +415,14 @@ export function CentreCommuteView({
             <p className="commute-estimate-note" role="note">Home to centre only; no workplace is configured in your saved profile.</p>
           )}
           {hasConfiguredWorkplace && (comparisonAvailable ? (
-            <div className="commute-deviation" data-deviation-seconds={signedDeviationSeconds}>
+            <div className="commute-deviation">
               <strong>{deviationHeadline}</strong>
               <p>Via centre {formatDuration(sample.totals.duration_seconds)} · Direct {formatDuration(directRoute.totals.duration_seconds)}</p>
               <small>Times rounded</small>
             </div>
           ) : (
             <div className="commute-estimate-note" role="status">
+              {directFailureMessage && <p>{directFailureMessage}</p>}
               <p>{directBaselineStatus === "supported"
                 ? "Extra travel unavailable with the available route data."
                 : directBaselineStatus === "error"
@@ -415,6 +433,7 @@ export function CentreCommuteView({
               {directBaselineStatus === "error" && <button type="button" className="retry-route-btn" onClick={
                 directBaselineError?.status === 401 || directBaselineError?.status === 403 ? onSignIn || onRetry : onRetry
               }>{directBaselineError?.status === 401 || directBaselineError?.status === 403 ? "Sign in" : "Retry comparison check"}</button>}
+              {directFailureRetryable && <button type="button" className="retry-route-btn" onClick={onRetry || undefined}>Retry route</button>}
             </div>
           ))}
           {mode === "pt" && !sample && (
@@ -424,71 +443,11 @@ export function CentreCommuteView({
             </div>
           )}
 
-          {/* Map display */}
-          {mapCoordinates.length > 0 && (hasCentreCoordinate || hasDirectRoute) ? <div className="centre-map-wrapper" data-testid="centre-commute-map">
-            <MapContainer
-              center={mapCoordinates[0]}
-              zoom={13}
-              zoomAnimation={false}
-              scrollWheelZoom={false}
-              style={{ height: "100%", width: "100%" }}
-            >
-              <MapViewportController coordinates={mapCoordinates} />
-              <TileLayer
-                attribution='&copy; <a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener noreferrer">OneMap</a> &copy; Singapore Land Authority'
-                url="https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png"
-                maxZoom={19}
-                minZoom={11}
-              />
-              {Number.isFinite(activeData.anchors?.home?.lat) && Number.isFinite(activeData.anchors?.home?.lng) && (
-                <Marker position={[activeData.anchors.home.lat, activeData.anchors.home.lng]} alt="Home" title="Home">
-                  <Popup>
-                    <strong>Home</strong>
-                  </Popup>
-                </Marker>
-              )}
-              {Number.isFinite(activeData.anchors?.centre?.lat) && Number.isFinite(activeData.anchors?.centre?.lng) && (
-                <Marker position={[activeData.anchors.centre.lat, activeData.anchors.centre.lng]} alt="Centre" title="Centre">
-                  <Popup>
-                    <strong>Centre</strong>{centreName ? `: ${centreName}` : ""}
-                  </Popup>
-                </Marker>
-              )}
-              {Number.isFinite(activeData.anchors?.workplace?.lat) && Number.isFinite(activeData.anchors?.workplace?.lng) && (
-                <Marker position={[activeData.anchors.workplace.lat, activeData.anchors.workplace.lng]} alt="Workplace" title="Workplace">
-                  <Popup>
-                    <strong>Workplace</strong>
-                  </Popup>
-                </Marker>
-              )}
-              {availableLegsWithGeometry.map((leg, idx) => {
-                const routeKey = idx === 0 ? "home-centre" : "centre-workplace";
-                const color = idx === 0 ? "#2563eb" : "#07805f";
-                const arrow = routeArrow(leg.geometry);
-                return <React.Fragment key={`${currentSampleKind}-${idx}`}>
-                  <Polyline
-                    positions={leg.geometry.map((c) => [c.lat, c.lng])}
-                    pathOptions={{ color, ...routeVisibility(routeKey) }}
-                  />
-                  <Marker position={arrow.position} icon={arrow.icon} interactive={false} />
-                </React.Fragment>;
-              })}
-              {hasDirectRoute && <>
-                <Polyline
-                  key="direct-route"
-                  positions={directRoute.legs[0].geometry.map((c) => [c.lat, c.lng])}
-                  pathOptions={{ color: "#59636e", weight: 3, dashArray: "10, 8", ...routeVisibility("direct") }}
-                />
-                <Marker position={routeArrow(directRoute.legs[0].geometry).position} icon={routeArrow(directRoute.legs[0].geometry).icon} interactive={false} />
-              </>}
-            </MapContainer>
-          </div> : <div className="centre-map-unavailable" role="status">Map view is currently unavailable for this centre.</div>}
-
           {hasConfiguredWorkplace && <div className="commute-route-legend" role="group" aria-label="Route alternatives">
             {hasDirectRoute && <button type="button" aria-pressed={highlightedRoute === "direct"} onClick={() => setHighlightedRoute(highlightedRoute === "direct" ? "all" : "direct")}>
               <span className="commute-route-key direct" aria-hidden="true" />Direct home to workplace
             </button>}
-            {legs[0] && <button type="button" aria-pressed={highlightedRoute === "home-centre"} onClick={() => setHighlightedRoute(highlightedRoute === "home-centre" ? "all" : "home-centre")}>
+          {legs[0] && <button type="button" aria-pressed={highlightedRoute === "home-centre"} onClick={() => setHighlightedRoute(highlightedRoute === "home-centre" ? "all" : "home-centre")}>
               <span className="commute-route-key home-centre" aria-hidden="true" />Home to centre
             </button>}
             {legs[1] && <button type="button" aria-pressed={highlightedRoute === "centre-workplace"} onClick={() => setHighlightedRoute(highlightedRoute === "centre-workplace" ? "all" : "centre-workplace")}>
@@ -498,7 +457,7 @@ export function CentreCommuteView({
           </div>}
 
           {/* Readable text breakdown */}
-          {sample && <div className="commute-breakdown" id="centre-commute-summary" tabIndex={-1} aria-label="Journey breakdown">
+          {sample && <div className="commute-breakdown" aria-label="Journey breakdown">
             {hasDirectRoute && <div className="commute-direct-summary">
               <strong>Direct home to workplace</strong>
               <span>{formatDuration(directRoute.totals.duration_seconds)} ({formatDistance(directRoute.totals.distance_meters)})</span>
@@ -534,7 +493,7 @@ export function CentreCommuteView({
                   </div>
                   {isAvailable && Array.isArray(leg.transit_legs) && leg.transit_legs.length > 0 && (
                     <div className="commute-transit-legs" aria-label="Transit segments">
-                      {leg.transit_legs.map((sub, sIdx) => {
+                      {leg.transit_legs.filter((sub) => sub && typeof sub === "object").map((sub, sIdx) => {
                         const isWalk = sub.mode === "WALK";
                         const route = typeof sub.route === "string" ? sub.route.trim() : "";
                         const safeRouteId = /^(?:[A-Z]{1,3}\d{1,4}|\d{1,4}[A-Z]?)$/i.test(route);
@@ -575,6 +534,7 @@ export function CentreCommuteView({
           </div>}
         </>
       )}
+      </div>
     </section>
   );
 }
