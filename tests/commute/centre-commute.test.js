@@ -66,6 +66,43 @@ describe("CentreCommute presentation", () => {
     expect(summary.homeTravelDistanceMeters).toBe(5000);
     expect(summary.signedDeviationSeconds).toBeNull();
     expect(summary.deviationHeadline).toBeNull();
+    const incomparable = summarizeCommute({
+      data: null, profileId: "prof-1", mode: "drive", workplaceConfigured: false,
+      comparisonCompatible: false,
+    });
+    expect(incomparable.homeTravelSeconds).toBeNull();
+    expect(incomparable.comparisonUnavailableMessage).toContain("different conditions");
+  });
+
+  it("distinguishes unsupported comparison and retains usable route facts when timing is uncertified", () => {
+    const timing = { duration_basis: "provider_default", arrival_source: "not_applicable", initial_wait_included: null };
+    const data = {
+      profile_id: "prof-1", mode: "drive", comparison_contract: "direct_baseline_v1",
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 }, workplace: { lat: 1.28, lng: 103.85 } },
+      evaluation: { evaluation_id: "eval-1", evaluated_at: "2026-11-07T03:00:00Z", profile_revision: "r1", anchor_revision: "a1" },
+      samples: [{ kind: "single", via_status: "partial", conditions: { conditions_id: "c1", provider_options_id: "p1" },
+        legs: [{ from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap", duration_seconds: 600, distance_meters: 5000,
+          geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }], timing, reasons: [] },
+        { from_anchor: "centre", to_anchor: "workplace", status: "unavailable", reasons: [{ code: "timing_unverified" }] }],
+        totals: null, comparison: { status: "unavailable", reasons: [{ code: "timing_unverified" }], certification: null },
+        direct_route: { status: "available", reasons: [], legs: [{ from_anchor: "home", to_anchor: "workplace", status: "available", source: "onemap", duration_seconds: 1800, distance_meters: 9000,
+          geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.28, lng: 103.85 }], timing, reasons: [] }], totals: { duration_seconds: 1800, distance_meters: 9000 } } }],
+    };
+    const unsupported = summarizeCommute({ data, profileId: "prof-1", mode: "drive", workplaceConfigured: true, directBaselineStatus: "unsupported" });
+    expect(unsupported.comparisonUnavailableMessage).toContain("not supported");
+    expect(unsupported.usableViaLegs).toHaveLength(1);
+
+    const timingUnavailable = summarizeCommute({ data, profileId: "prof-1", mode: "drive", workplaceConfigured: true, directBaselineStatus: "supported" });
+    expect(timingUnavailable.comparisonUnavailableMessage).toContain("timing could not be verified");
+    expect(timingUnavailable.directTravelSeconds).toBe(1800);
+    expect(timingUnavailable.usableViaLegs[0].durationSeconds).toBe(600);
+
+    const incoherent = summarizeCommute({ data, profileId: "prof-1", mode: "drive", workplaceConfigured: true,
+      directBaselineStatus: "supported", comparisonCompatible: false });
+    expect(incoherent.comparisonAvailable).toBe(false);
+    expect(incoherent.comparisonUnavailableMessage).toContain("different conditions");
+    expect(incoherent.directTravelSeconds).toBe(1800);
+    expect(incoherent.usableViaLegs).toHaveLength(1);
   });
 
   it("keeps usable current-context routes visible while refreshing or showing an independent error", () => {

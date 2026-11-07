@@ -144,7 +144,7 @@ function isCertifiedComparison({ data, sample, mode, profileId, legs, expectedLe
 }
 
 /** Shared, fail-closed commute summary for matches, details and comparison. */
-export function summarizeCommute({ data, profileId, mode = "drive", directBaselineStatus = "disabled", workplaceConfigured }) {
+export function summarizeCommute({ data, profileId, mode = "drive", directBaselineStatus = "disabled", workplaceConfigured, comparisonCompatible = true, comparisonSetComplete = true }) {
   const samples = Array.isArray(data?.samples) ? data.samples.filter((item) => item && typeof item === "object") : [];
   const sample = mode === "pt" ? samples.find((item) => item.kind === "weekday") || null : samples[0] || null;
   const hasConfiguredWorkplace = workplaceConfigured ?? Boolean(
@@ -170,10 +170,12 @@ export function summarizeCommute({ data, profileId, mode = "drive", directBaseli
   const baselineReady = hasNegotiatedBaseline({ data, sample, profileId, mode, directBaselineStatus });
   const directRoute = sample?.direct_route;
   const hasDirectRoute = baselineReady && completeRoute(directRoute, "home", "workplace");
-  const comparisonAvailable = isCertifiedComparison({
+  const directFailureMessage = baselineReady ? directRouteFailureMessage(directRoute) : null;
+  const individuallyCertified = isCertifiedComparison({
     data, sample, mode, profileId, legs, expectedLegs, hasCompleteTotals, hasConfiguredWorkplace,
     hasNegotiatedBaseline: baselineReady,
   });
+  const comparisonAvailable = individuallyCertified && comparisonCompatible;
   const signedDeviationSeconds = comparisonAvailable
     ? sample.totals.duration_seconds - directRoute.totals.duration_seconds
     : null;
@@ -181,14 +183,65 @@ export function summarizeCommute({ data, profileId, mode = "drive", directBaseli
     : signedDeviationSeconds <= 0 ? "No extra travel"
       : signedDeviationSeconds < 60 ? "Less than 1 min extra travel"
         : `${Math.floor(signedDeviationSeconds / 60 + 0.5)} min extra travel`;
+  const hasHomeCoordinate = hasCoordinate(data?.anchors?.home);
+  const hasWorkplaceCoordinate = hasCoordinate(data?.anchors?.workplace);
+  const unresolvedLeg = legs.find((leg) => leg?.status === "unavailable" &&
+    typeof leg.message === "string" && leg.message.toLowerCase().includes("could not be resolved"));
+  const homeUnresolvable = Boolean(data && !hasHomeCoordinate) ||
+    Boolean(unresolvedLeg?.message?.toLowerCase().includes("home"));
+  const workplaceUnresolvable = hasConfiguredWorkplace && (!hasWorkplaceCoordinate ||
+    Boolean(unresolvedLeg?.message?.toLowerCase().includes("workplace")));
+  const locationError = homeUnresolvable
+    ? "Your saved home location could not be resolved. Edit your family profile to update it."
+    : workplaceUnresolvable
+      ? "Your configured workplace location could not be resolved. Edit your family profile to update it."
+      : null;
+  const reasonCodes = [
+    ...(Array.isArray(sample?.reasons) ? sample.reasons : []),
+    ...(Array.isArray(sample?.comparison?.reasons) ? sample.comparison.reasons : []),
+    ...(Array.isArray(sample?.direct_route?.reasons) ? sample.direct_route.reasons : []),
+    ...legs.flatMap((leg) => Array.isArray(leg?.reasons) ? leg.reasons : []),
+  ].map((reason) => reason?.code).filter(Boolean);
+  const timingUnverified = reasonCodes.includes("timing_unverified") ||
+    legs.some((leg) => leg?.timing?.verified === false) || sample?.comparison?.status === "unavailable" &&
+      !reasonCodes.some((code) => code !== "timing_unverified");
+  const comparisonUnavailableMessage = !comparisonSetComplete ? "Some centre estimates are missing, so route estimates cannot be compared directly."
+    : !comparisonCompatible ? "Route estimates use different conditions and cannot be compared directly."
+    : !hasConfiguredWorkplace ? null
+    : directBaselineStatus === "unsupported" ? "Extra travel comparison is not supported for this profile and mode."
+      : directBaselineStatus === "disabled" ? "Extra travel comparison is not enabled for this service."
+        : directBaselineStatus === "error" ? "Extra travel comparison could not be checked. Retry to check support."
+          : directFailureMessage ? directFailureMessage
+            : timingUnverified ? "Travel timing could not be verified, so extra travel is unavailable."
+            : directBaselineStatus === "supported" ? "Extra travel unavailable with the available route data."
+              : "Extra travel comparison is not available yet.";
+  const usableViaLegs = legs.filter((leg, index) =>
+    leg?.from_anchor === expectedLegs[index]?.[0] && leg?.to_anchor === expectedLegs[index]?.[1] && isUsableRouteLeg(leg)
+  ).map((leg) => ({
+    from: leg.from_anchor, to: leg.to_anchor, durationSeconds: leg.duration_seconds,
+    distanceMeters: leg.distance_meters,
+  }));
   return {
     sample, legs, expectedLegs, hasConfiguredWorkplace, hasCompleteTotals, baselineReady,
     directRoute, hasDirectRoute, comparisonAvailable, signedDeviationSeconds, deviationHeadline,
-    homeTravelSeconds: !hasConfiguredWorkplace && hasCompleteTotals ? sample.totals.duration_seconds : null,
-    homeTravelDistanceMeters: !hasConfiguredWorkplace && hasCompleteTotals ? sample.totals.distance_meters : null,
+    homeTravelSeconds: !hasConfiguredWorkplace && hasCompleteTotals && comparisonCompatible && comparisonSetComplete ? sample.totals.duration_seconds : null,
+    homeTravelDistanceMeters: !hasConfiguredWorkplace && hasCompleteTotals && comparisonCompatible && comparisonSetComplete ? sample.totals.distance_meters : null,
     directFailureMessage: baselineReady ? directRouteFailureMessage(directRoute) : null,
     directFailureRetryable: baselineReady && Array.isArray(directRoute?.reasons) && directRoute.reasons.some((reason) => reason?.retryable === true),
+    directBaselineStatus, locationError, comparisonUnavailableMessage, timingUnverified,
+    usableViaLegs,
+    directTravelSeconds: hasDirectRoute ? directRoute.totals.duration_seconds : null,
+    directTravelDistanceMeters: hasDirectRoute ? directRoute.totals.distance_meters : null,
   };
+}
+
+export function CommuteModeSelector({ mode, onModeChange }) {
+  const modes = [["drive", "Driving"], ["pt", "Public transport"], ["walk", "Walking"], ["cycle", "Cycling"]];
+  return <div className="commute-mode-selector" role="group" aria-label="Travel mode">
+    {modes.map(([value, label]) => <button key={value} type="button"
+      aria-pressed={mode === value} className={`commute-mode-btn ${mode === value ? "active" : ""}`}
+      onClick={() => onModeChange?.(value)}>{label}</button>)}
+  </div>;
 }
 
 function routeArrow(geometry) {
@@ -333,40 +386,7 @@ export function CentreCommuteView({
       {commuteMap}
       <div id="centre-commute-summary" tabIndex={-1} aria-label="Commute details">
       {/* Travel mode selector */}
-      <div className="commute-mode-selector" role="group" aria-label="Travel mode">
-        <button
-          type="button"
-          aria-pressed={mode === "drive"}
-          className={`commute-mode-btn ${mode === "drive" ? "active" : ""}`}
-          onClick={() => onModeChange && onModeChange("drive")}
-        >
-          Driving
-        </button>
-        <button
-          type="button"
-          aria-pressed={mode === "pt"}
-          className={`commute-mode-btn ${mode === "pt" ? "active" : ""}`}
-          onClick={() => onModeChange && onModeChange("pt")}
-        >
-          Public transport
-        </button>
-        <button
-          type="button"
-          aria-pressed={mode === "walk"}
-          className={`commute-mode-btn ${mode === "walk" ? "active" : ""}`}
-          onClick={() => onModeChange && onModeChange("walk")}
-        >
-          Walking
-        </button>
-        <button
-          type="button"
-          aria-pressed={mode === "cycle"}
-          className={`commute-mode-btn ${mode === "cycle" ? "active" : ""}`}
-          onClick={() => onModeChange && onModeChange("cycle")}
-        >
-          Cycling
-        </button>
-      </div>
+      <CommuteModeSelector mode={mode} onModeChange={onModeChange} />
 
       {loading && !activeData && (
         <>
