@@ -114,6 +114,8 @@ export function normalizeCentreComparisonContext(context) {
   if (context.compareStep === 'comparison' && ids.length < 2) return null;
   const scrollY = Number(context.compareScrollY ?? context.scrollY ?? 0);
   if (!Number.isFinite(scrollY) || scrollY < 0 || scrollY > 10_000_000) return null;
+  const selectionScrollY = Number(context.compareSelectionScrollY ?? (context.compareStep === 'selection' ? scrollY : 0));
+  if (!Number.isFinite(selectionScrollY) || selectionScrollY < 0 || selectionScrollY > 10_000_000) return null;
   if (context.compareDistricts != null && !Array.isArray(context.compareDistricts)) return null;
   const districts = (context.compareDistricts || []).map((district) => {
     const value = typeof district === 'number' ? district : /^\d{1,2}$/.test(String(district ?? '').trim())
@@ -130,6 +132,7 @@ export function normalizeCentreComparisonContext(context) {
     compareDistricts: districts.slice(0, 50),
     compareSelectedIds: ids,
     compareScrollY: scrollY,
+    compareSelectionScrollY: selectionScrollY,
   };
 }
 

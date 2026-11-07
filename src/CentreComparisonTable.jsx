@@ -185,7 +185,7 @@ export default function CentreComparisonTable({ centres, details, profile, trave
 
   return (
     <div className="comparison-table-scroll" role="region" aria-label="Centre comparison table" tabIndex="0">
-      <table className="spec-comparison-table">
+      <table className={`spec-comparison-table centre-count-${centres.length}`}>
         <caption className="visually-hidden">Selected centre facts compared side by side</caption>
         <thead>
           <tr>

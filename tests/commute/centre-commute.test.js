@@ -151,6 +151,36 @@ describe("CentreCommute presentation", () => {
     expect(incoherent.usableViaLegs).toHaveLength(1);
   });
 
+  it("retains certified route facts but withholds numeric extra travel for an incomplete centre set", () => {
+    const leg = (from, to, duration, distance) => ({
+      from_anchor: from, to_anchor: to, status: "available", source: "onemap",
+      duration_seconds: duration, distance_meters: distance,
+      geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.31, lng: 103.81 }],
+      timing: { duration_basis: "provider_default" }, reasons: [],
+    });
+    const data = {
+      centre_id: 101, profile_id: "prof-1", mode: "drive", comparison_contract: "direct_baseline_v1",
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.31, lng: 103.81 }, workplace: { lat: 1.32, lng: 103.82 } },
+      evaluation: { evaluation_id: "eval-1", evaluated_at: "2026-11-07T03:00:00Z", profile_revision: "profile-r1", anchor_revision: "anchors-r1" },
+      samples: [{
+        kind: "single", via_status: "available", reasons: [],
+        conditions: { conditions_id: "conditions-1", provider_options_id: "options-1", timing_basis: "provider_default" },
+        legs: [leg("home", "centre", 900, 3000), leg("centre", "workplace", 900, 3000)],
+        totals: { duration_seconds: 1800, distance_meters: 6000 },
+        direct_route: { status: "available", reasons: [], legs: [leg("home", "workplace", 1200, 4000)], totals: { duration_seconds: 1200, distance_meters: 4000 } },
+        comparison: { status: "available", reasons: [], certification: { provider_options_id: "options-1", duration_basis: "provider_default" } },
+      }],
+    };
+    const summary = summarizeCommute({ data, profileId: "prof-1", mode: "drive", workplaceConfigured: true,
+      directBaselineStatus: "supported", comparisonCompatible: false, comparisonSetComplete: false });
+
+    expect(summary.comparisonAvailable).toBe(false);
+    expect(summary.signedDeviationSeconds).toBeNull();
+    expect(summary.directTravelSeconds).toBe(1200);
+    expect(summary.usableViaLegs).toHaveLength(2);
+    expect(summary.comparisonUnavailableMessage).toContain("Some centre estimates are missing");
+  });
+
   it("keeps usable current-context routes visible while refreshing or showing an independent error", () => {
     const activeData = {
       centre_id: 101, profile_id: "prof-1", mode: "drive",
