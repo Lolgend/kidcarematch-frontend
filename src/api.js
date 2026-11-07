@@ -107,6 +107,12 @@ export const getCommuteCapabilities = (options = {}) =>
 export const getCentres = (params = {}) =>
   apiRequest(`/api/v1/centres${qs(params)}`);
 
+export const matchCentres = (payload) =>
+  apiRequest("/api/v1/centres/match", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
 export const getDistricts = () =>
   apiRequest("/api/v1/centres/districts");
 

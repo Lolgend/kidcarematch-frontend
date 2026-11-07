@@ -20,12 +20,12 @@ export const PROFILE_DEFAULTS = {
   income: '',
   members: '',
   budget: 750,
-  weights: { vacancy: 50, cost: 35, travel: 15 },
+  weights: { vacancy: 3, cost: 3, travel: 3 },
 };
 
 export const WEIGHT_KEYS = ['vacancy', 'cost', 'travel'];
 export const WEIGHT_LABELS = { vacancy: 'Vacancy fit', cost: 'Cost fit', travel: 'Travel fit' };
-export const RANK_WEIGHTS = [50, 35, 15];
+export const RANK_WEIGHTS = [3, 2, 1];
 
 // Most important first. Ties keep default order.
 export function priorityOrder(weights) {
@@ -38,8 +38,22 @@ export function weightsFromOrder(order) {
   return Object.fromEntries(WEIGHT_KEYS.map((key) => [key, RANK_WEIGHTS[order.indexOf(key)]]));
 }
 
-// Snap any weights to the standard ranking.
-export const normalizeWeights = (weights) => weightsFromOrder(priorityOrder(weights));
+// Restore integer ratings. Legacy browser drafts used distinct percentages;
+// convert those priorities to 3/2/1 while retaining current ratings and ties.
+export function normalizeWeights(weights) {
+  const values = WEIGHT_KEYS.map((key) => Number(weights?.[key]));
+  const legacyRanks = values.every(Number.isFinite) &&
+    values.every((value) => [15, 35, 50].includes(value)) &&
+    new Set(values).size === 3;
+  if (legacyRanks) {
+    const order = priorityOrder(weights);
+    return Object.fromEntries(WEIGHT_KEYS.map((key) => [key, 3 - order.indexOf(key)]));
+  }
+  return Object.fromEntries(WEIGHT_KEYS.map((key) => {
+    const value = Number(weights?.[key]);
+    return [key, Number.isFinite(value) ? Math.min(5, Math.max(1, Math.round(value))) : 3];
+  }));
+}
 
 // Give `key` the chosen rank (0-based); factor that held that rank takes its old one.
 export function setRank(weights, key, rank) {
@@ -141,25 +155,21 @@ export function toApiProfile(form, profileName) {
     household_member_count: Math.max(1, Number(form.members) || 1),
     budget_max: Number(form.budget),
     enrollment_month_year: form.enrolMonth || nextMonthValue(),
-    vacancy_weight: Math.round(weights.vacancy) / 100,
-    cost_weight: Math.round(weights.cost) / 100,
-    travel_weight: Math.round(weights.travel) / 100,
+    vacancy_weight: weights.vacancy,
+    cost_weight: weights.cost,
+    travel_weight: weights.travel,
   };
 }
 
 export function fromApiProfile(api, local) {
-  let resolvedWeights = PROFILE_DEFAULTS.weights;
-  if (local?.weights) {
-    resolvedWeights = normalizeWeights(local.weights);
-  } else if (api?.vacancy_weight != null && (api?.cost_weight != null || api?.travel_weight != null)) {
-    resolvedWeights = normalizeWeights({
-      vacancy: Math.round(Number(api.vacancy_weight) * 100),
-      cost: Math.round(Number(api.cost_weight) * 100),
-      travel: Math.round(Number(api.travel_weight) * 100),
-    });
-  } else if (api?.cost_weight != null) {
-    resolvedWeights = weightsFromCostShare(Number(api.cost_weight));
-  }
+  const hasServerRatings = WEIGHT_KEYS.some((key) => api?.[`${key}_weight`] != null);
+  const resolvedWeights = hasServerRatings
+    ? normalizeWeights({
+      vacancy: api?.vacancy_weight ?? 3,
+      cost: api?.cost_weight ?? 3,
+      travel: api?.travel_weight ?? 3,
+    })
+    : normalizeWeights(local?.weights || PROFILE_DEFAULTS.weights);
 
   return {
     ...PROFILE_DEFAULTS,
