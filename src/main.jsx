@@ -21,7 +21,8 @@ import {
 import { auth } from './firebase';
 import AdminDashboard from './admin/AdminDashboard';
 import CentreCommute from './commute/CentreCommute';
-import MatchesCommute from './commute/MatchesCommute.jsx';
+import MatchesCommute, { MatchCommuteSummary } from './commute/MatchesCommute.jsx';
+import { getProfileCommuteContextKey } from './commute/commuteSession.js';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
 import { centreDetailsPath, centreIdFromPath } from './centreDetailsRoute';
@@ -2662,50 +2663,36 @@ function App() {
 
                   {matchStatus === 'done' && ranked.length > 0 && (
                     <MatchesCommute centres={ranked.slice(0, 10)} currentUser={currentUser} profileId={profileId}
-                      profile={profile} onSignIn={() => setAuthMode('login')} />
+                      profile={profile} onSignIn={() => setAuthMode('login')}>
+                      {(commuteFor) => ranked.slice(0, 10).map((centre, index) => {
+                        const commute = commuteFor(centre);
+                        return <article className="panel centre-card" key={centre.id} style={{ marginBottom: 16 }}>
+                          <div className="centre-card-top">
+                            <span className="eyebrow">#{index + 1} · {centre.score}% match</span>
+                            <button className="icon-btn" aria-label={isSaved(centre.id) ? 'Remove from watchlist' : 'Save to watchlist'} onClick={() => toggleSaved(centre.id)}>
+                              <Heart size={18} fill={isSaved(centre.id) ? '#e63946' : 'none'} color={isSaved(centre.id) ? '#e63946' : '#9ca3af'} />
+                            </button>
+                          </div>
+                          <h3>{centre.name}</h3>
+                          <p><MapPin size={14} /> {centre.address || 'Address not provided'}</p>
+                          <p>
+                            <strong>{money(centre.fee)}</strong> / month ({levelLabel(matchRun.level)},{' '}
+                            {matchRun.citizenship}, before subsidy)<br />
+                            Vacancy: {centre.vacancyLabel}
+                          </p>
+                          <MatchCommuteSummary centre={centre} summary={commute.summary} error={commute.errors}
+                            loading={commute.loading} workplaceConfigured={Boolean(profile?.work)} onRetry={commute.retry} />
+                          <p className="fine-print">Vacancy {centre.vf}% · Cost {centre.cf}% · Travel {centre.tf}%</p>
+                          <div className="centre-tags">
+                            {centre.spark_certified && <span>SPARK certified</span>}
+                            {centre.gov_subsidy && <span>Government subsidy</span>}
+                            {centre.transport_provided && <span>Transport</span>}
+                          </div>
+                          <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>View details</button>
+                        </article>;
+                      })}
+                    </MatchesCommute>
                   )}
-
-                  {matchStatus === 'done' && ranked.slice(0, 10).map((centre, index) => (
-                    <article className="panel centre-card" key={centre.id} style={{ marginBottom: 16 }}>
-                      <div className="centre-card-top">
-                        <span className="eyebrow">#{index + 1} · {centre.score}% match</span>
-                        <button
-                          className="icon-btn"
-                          aria-label={isSaved(centre.id) ? 'Remove from watchlist' : 'Save to watchlist'}
-                          onClick={() => toggleSaved(centre.id)}
-                        >
-                          <Heart
-                            size={18}
-                            fill={isSaved(centre.id) ? '#e63946' : 'none'}
-                            color={isSaved(centre.id) ? '#e63946' : '#9ca3af'}
-                          />
-                        </button>
-                      </div>
-
-                      <h3>{centre.name}</h3>
-                      <p><MapPin size={14} /> {centre.address || 'Address not provided'}</p>
-
-                      <p>
-                        <strong>{money(centre.fee)}</strong> / month ({levelLabel(matchRun.level)},{' '}
-                        {matchRun.citizenship}, before subsidy)<br />
-                        Vacancy: {centre.vacancyLabel}
-                      </p>
-
-                      <p className="fine-print">
-                        Vacancy {centre.vf}% · Cost {centre.cf}% · Travel {centre.tf}%
-                      </p>
-
-                      <div className="centre-tags">
-                        {centre.spark_certified && <span>SPARK certified</span>}
-                        {centre.gov_subsidy && <span>Government subsidy</span>}
-                        {centre.transport_provided && <span>Transport</span>}
-                      </div>
-
-                      <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
-                        View details
-                      </button>
-                    </article>
-                  ))}
                 </section>
               </div>
             </>
@@ -3228,7 +3215,7 @@ function App() {
                         currentUser={currentUser}
                         profileId={profileId}
                         workplaceConfigured={profile ? Boolean(profile.work) : undefined}
-                        profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
+                        profileLocationKey={getProfileCommuteContextKey(profile, profileId)}
                         onSignIn={() => setAuthMode('login')}
                         onEditProfile={() => openPage('Family profile')}
                       />
