@@ -425,7 +425,7 @@ function ImportanceRatings({ ratings, onChange }) {
   );
 }
 
-function App() {
+export function App() {
   const [centres, setCentres] = useState([]);
   const [centresLoading, setCentresLoading] = useState(true);
   const [centresError, setCentresError] = useState('');
@@ -475,6 +475,7 @@ function App() {
   const centreReturnOriginRef = useRef(null);
   const pendingCentreOriginRestoreRef = useRef(null);
   const activeIdentityRef = useRef(undefined);
+  const deliberateSignInRef = useRef(false);
   const [returnContextReady, setReturnContextReady] = useState(false);
 
   // Hooks must live inside the component (this was at module level before).
@@ -645,6 +646,10 @@ function App() {
 
   useEffect(() => {
     if (!authResolved || !returnContextReady || centreReturnRestoredRef.current) return;
+    if (deliberateSignInRef.current && !centreIdFromPath(window.location.pathname)) {
+      centreReturnRestoredRef.current = true;
+      return;
+    }
     if (currentUser && onboardingState.status === 'loading') return;
     const historyState = window.history.state || {};
     const contextId = historyState.centreOriginId || historyState.centreComparisonContextId;
@@ -736,6 +741,10 @@ function App() {
       setProfileName(onboardingState.profileName);
       setProfileForm(p);
       applyProfileToMatching(p);
+      if (deliberateSignInRef.current) {
+        deliberateSignInRef.current = false;
+        if (!centreIdFromPath(window.location.pathname)) setPage('Overview');
+      }
       if (onboardingState.isFirstSave) {
         setPage('Find my matches');
         notify('Family profile completed! Here are your matches.');
@@ -746,6 +755,7 @@ function App() {
       setProfileName('My family profile');
       setProfileForm({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() });
     } else if (onboardingState.status === 'required') {
+      deliberateSignInRef.current = false;
       setProfile(null);
       setProfileId(onboardingState.profileId);
       setProfileName(onboardingState.profileName);
@@ -1553,9 +1563,11 @@ function App() {
         setAuthMode('login');
         return;
       } else if (authMode === 'login') {
+        deliberateSignInRef.current = true;
         const result = await signInWithEmailAndPassword(auth, email, password);
 
         if (!result.user.emailVerified) {
+          deliberateSignInRef.current = false;
           await sendEmailVerification(result.user);
           await signOut(auth);
           notify('Please verify your email before signing in.');
@@ -1571,6 +1583,7 @@ function App() {
 
       setAuthMode(authMode === 'register' ? 'login' : '');
     } catch (error) {
+      deliberateSignInRef.current = false;
       const messages = {
         'auth/email-already-in-use': 'This email is already registered.',
         'auth/invalid-email': 'Please enter a valid email.',
@@ -1586,10 +1599,12 @@ function App() {
 
   const handleGoogleSignIn = async () => {
     try {
+      deliberateSignInRef.current = true;
       await signInWithPopup(auth, new GoogleAuthProvider());
       setAuthMode('');
       notify('Successfully signed in with Google!');
     } catch (error) {
+      deliberateSignInRef.current = false;
       notify(error.message);
     }
   };
@@ -3441,4 +3456,5 @@ function Empty({ title, text, action }) {
   );
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+const appRoot = document.getElementById('root');
+if (appRoot) createRoot(appRoot).render(<App />);
