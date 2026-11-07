@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { loadCentreReturnContext, protectCentreReturnQuery, restoreCentreReturnQuery, saveCentreReturnContext } from "../src/centreReturnContext.js";
+import { clearCentreReturnContext, loadCentreReturnContext, normalizeCentreComparisonContext, protectCentreReturnQuery, restoreCentreReturnQuery, saveCentreReturnContext } from "../src/centreReturnContext.js";
 
 const previousWindow = globalThis.window;
 
@@ -34,5 +34,46 @@ describe("centre return query privacy", () => {
   it("fails closed when a stored home or workplace reference cannot be resolved", () => {
     const protectedQuery = protectCentreReturnQuery("near 123456", { home: "123456" });
     expect(restoreCentreReturnQuery({ query: protectedQuery }, null)).toBe("");
+  });
+});
+
+describe("centre comparison return context", () => {
+  const makeStorage = () => {
+    const values = new Map();
+    return {
+      values,
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => values.delete(key),
+    };
+  };
+
+  it("loads only the active account's stored picker context and clearing it revokes history references", () => {
+    const sessionStorage = makeStorage();
+    globalThis.window = { sessionStorage };
+    const privateSearch = protectCentreReturnQuery("Bedok near 123456", { home: "123456" });
+    const id = saveCentreReturnContext({
+      uid: "user-1", page: "Compare centres", compareStep: "comparison",
+      compareSelectedIds: ["centre-1", "centre-2"], compareQuery: privateSearch,
+      compareDistricts: [16], compareWatchlistOnly: true, compareScrollY: 420,
+    });
+
+    expect(normalizeCentreComparisonContext(loadCentreReturnContext("user-2", id))).toBeNull();
+    expect(normalizeCentreComparisonContext(loadCentreReturnContext("user-1", id))).toMatchObject({
+      page: "Compare centres", compareStep: "comparison", compareSelectedIds: ["centre-1", "centre-2"],
+      compareQuery: "Bedok near {{kidcare-owned-home}}", compareDistricts: [16], compareWatchlistOnly: true, compareScrollY: 420,
+    });
+    expect(JSON.stringify([...sessionStorage.values.values()])).not.toContain("123456");
+    clearCentreReturnContext();
+    expect(normalizeCentreComparisonContext(loadCentreReturnContext("user-1", id))).toBeNull();
+  });
+
+  it("rejects malformed picker pages, steps, selections and scroll offsets", () => {
+    expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "details", compareSelectedIds: [] })).toBeNull();
+    expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: ["a", "a"] })).toBeNull();
+    expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: ["a", "b", "c", "d"] })).toBeNull();
+    expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: [], compareScrollY: Infinity })).toBeNull();
+    expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: [], compareDistricts: [29] })).toBeNull();
+    expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: [], compareDistricts: ["bad"] })).toBeNull();
   });
 });
