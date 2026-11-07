@@ -64,6 +64,11 @@ function hasCoordinate(point) {
     Number.isFinite(point?.lng) && point.lng >= -180 && point.lng <= 180;
 }
 
+function isEndpointAuthorizationError(error) {
+  if (error?.failureClass === "service" || error?.code === "provider_auth_failed") return false;
+  return error?.failureClass === "authentication" || error?.status === 401 || error?.status === 403;
+}
+
 function sameMetric(left, right) {
   return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) < 0.001;
 }
@@ -157,6 +162,7 @@ function routeArrow(geometry) {
 
 export function CentreCommuteView({
   currentUser,
+  centreId,
   profileId,
   workplaceConfigured,
   centre,
@@ -164,6 +170,7 @@ export function CentreCommuteView({
   loading,
   error,
   data,
+  setData = {},
   mode = "drive",
   directBaselineStatus = "disabled",
   directBaselineError = null,
@@ -211,13 +218,17 @@ export function CentreCommuteView({
   }
 
   // 3. Parents with saved profile
-  const samples = Array.isArray(data?.samples) ? data.samples : [];
+  const activeCentreId = centreId ?? centre?.id ?? centre?.centre_id;
+  const routeAuthError = isEndpointAuthorizationError(error);
+  const activeData = routeAuthError ? null :
+    data || (activeCentreId != null ? setData?.[String(activeCentreId)] : null) || null;
+  const samples = Array.isArray(activeData?.samples) ? activeData.samples : [];
   const sample = mode === "pt"
     ? samples.find((item) => item.kind === "weekday") || null
     : samples[0] || null;
   const currentSampleKind = sample?.kind || "single";
   const hasConfiguredWorkplace = workplaceConfigured ?? Boolean(
-    data?.anchors?.workplace || sample?.legs?.some((leg) => leg.to_anchor === "workplace")
+    activeData?.anchors?.workplace || sample?.legs?.some((leg) => leg.to_anchor === "workplace")
   );
   const legs = (sample?.legs || []).filter((leg) =>
     hasConfiguredWorkplace || leg.to_anchor !== "workplace"
@@ -227,11 +238,11 @@ export function CentreCommuteView({
   const unresolvableLeg = legs.find(
     (l) => l.status === "unavailable" && l.message && l.message.toLowerCase().includes("could not be resolved")
   );
-  const homeAnchor = data?.anchors?.home;
+  const homeAnchor = activeData?.anchors?.home;
   const hasHomeCoordinate = Number.isFinite(homeAnchor?.lat) && Number.isFinite(homeAnchor?.lng);
-  const workplaceAnchor = data?.anchors?.workplace;
+  const workplaceAnchor = activeData?.anchors?.workplace;
   const hasWorkplaceCoordinate = Number.isFinite(workplaceAnchor?.lat) && Number.isFinite(workplaceAnchor?.lng);
-  const homeUnresolvable = Boolean(data && !hasHomeCoordinate) ||
+  const homeUnresolvable = Boolean(activeData && !hasHomeCoordinate) ||
     (unresolvableLeg && unresolvableLeg.message.toLowerCase().includes("home"));
   const workplaceUnresolvable = hasConfiguredWorkplace && (
     !hasWorkplaceCoordinate ||
@@ -255,10 +266,10 @@ export function CentreCommuteView({
     hasNonnegativeMetric(sample?.totals?.distance_meters)
   );
   const directRoute = sample?.direct_route;
-  const baselineReady = hasNegotiatedBaseline({ data, sample, profileId, mode, directBaselineStatus });
+  const baselineReady = hasNegotiatedBaseline({ data: activeData, sample, profileId, mode, directBaselineStatus });
   const hasDirectRoute = baselineReady && completeRoute(directRoute, "home", "workplace");
   const comparisonAvailable = isCertifiedComparison({
-    data, sample, mode, profileId, legs, expectedLegs, hasCompleteTotals, hasConfiguredWorkplace,
+    data: activeData, sample, mode, profileId, legs, expectedLegs, hasCompleteTotals, hasConfiguredWorkplace,
     hasNegotiatedBaseline: baselineReady,
   });
   const signedDeviationSeconds = comparisonAvailable
@@ -276,9 +287,9 @@ export function CentreCommuteView({
   const availableLegsWithGeometry = legs.filter(
     isUsableRouteLeg
   );
-  const hasCentreCoordinate = Number.isFinite(data?.anchors?.centre?.lat) && Number.isFinite(data?.anchors?.centre?.lng);
+  const hasCentreCoordinate = Number.isFinite(activeData?.anchors?.centre?.lat) && Number.isFinite(activeData?.anchors?.centre?.lng);
   const mapCoordinates = [
-    ...[data?.anchors?.home, data?.anchors?.centre, data?.anchors?.workplace]
+    ...[activeData?.anchors?.home, activeData?.anchors?.centre, activeData?.anchors?.workplace]
       .filter((point) => point && Number.isFinite(point.lat) && Number.isFinite(point.lng))
       .map((point) => [point.lat, point.lng]),
     ...availableLegsWithGeometry.flatMap((leg) => leg.geometry
@@ -329,24 +340,45 @@ export function CentreCommuteView({
         </button>
       </div>
 
-      {loading && (
+      {loading && !activeData && (
         <>
           <CentreLocationMap centre={centre} currentUser={currentUser} getCentreLocation={getCentreLocation} />
           <div className="centre-map-loading" role="status">Loading commute route…</div>
         </>
       )}
 
-      {error && !loading && (
+      {error && !loading && !activeData && (
         <>
           <CentreLocationMap centre={centre} currentUser={currentUser} getCentreLocation={getCentreLocation} />
           <div className="centre-map-unavailable" role="status">
-            <p>{mode === "pt" ? "Could not load the public transport estimate." : "Could not load commute route."}</p>
-            <button type="button" className="retry-route-btn" onClick={onRetry || undefined}>Retry route</button>
+            <p>{routeAuthError
+              ? error.status === 401
+                ? "Your sign-in has expired. Sign in again to load your personal commute route."
+                : "This account cannot access personal commute routes. Switch to a parent account to continue."
+              : mode === "pt" ? "Could not load the public transport estimate." : "Could not load commute route."}</p>
+            <button type="button" className="retry-route-btn" onClick={routeAuthError ? onSignIn || undefined : onRetry || undefined}>
+              {routeAuthError ? error.status === 401 ? "Sign in" : "Sign in with a parent account" : "Retry route"}
+            </button>
           </div>
         </>
       )}
 
-      {!loading && !error && data && (
+      {activeData && (loading || error) && (
+        <div className={error ? "commute-refresh-status commute-refresh-error" : "commute-refresh-status"} role={error ? "alert" : "status"}>
+          <p>{loading
+            ? "Refreshing commute estimates. Showing available results for this selection."
+            : routeAuthError
+            ? error.status === 401
+              ? "Your sign-in expired while refreshing. Showing available results for this selection."
+              : "This account cannot refresh personal commute routes. Showing available results for this selection."
+            : "Some commute estimates could not be refreshed. Showing available results for this selection."}</p>
+          {error && <button type="button" className="retry-route-btn" onClick={routeAuthError ? onSignIn || undefined : onRetry || undefined}>
+            {routeAuthError ? error.status === 401 ? "Sign in" : "Sign in with a parent account" : "Retry route"}
+          </button>}
+        </div>
+      )}
+
+      {activeData && (
         <>
           {unresolvableMessage && (
             <div className="commute-unresolvable-warning" role="alert">
@@ -408,22 +440,22 @@ export function CentreCommuteView({
                 maxZoom={19}
                 minZoom={11}
               />
-              {Number.isFinite(data.anchors?.home?.lat) && Number.isFinite(data.anchors?.home?.lng) && (
-                <Marker position={[data.anchors.home.lat, data.anchors.home.lng]} alt="Home" title="Home">
+              {Number.isFinite(activeData.anchors?.home?.lat) && Number.isFinite(activeData.anchors?.home?.lng) && (
+                <Marker position={[activeData.anchors.home.lat, activeData.anchors.home.lng]} alt="Home" title="Home">
                   <Popup>
                     <strong>Home</strong>
                   </Popup>
                 </Marker>
               )}
-              {Number.isFinite(data.anchors?.centre?.lat) && Number.isFinite(data.anchors?.centre?.lng) && (
-                <Marker position={[data.anchors.centre.lat, data.anchors.centre.lng]} alt="Centre" title="Centre">
+              {Number.isFinite(activeData.anchors?.centre?.lat) && Number.isFinite(activeData.anchors?.centre?.lng) && (
+                <Marker position={[activeData.anchors.centre.lat, activeData.anchors.centre.lng]} alt="Centre" title="Centre">
                   <Popup>
                     <strong>Centre</strong>{centreName ? `: ${centreName}` : ""}
                   </Popup>
                 </Marker>
               )}
-              {Number.isFinite(data.anchors?.workplace?.lat) && Number.isFinite(data.anchors?.workplace?.lng) && (
-                <Marker position={[data.anchors.workplace.lat, data.anchors.workplace.lng]} alt="Workplace" title="Workplace">
+              {Number.isFinite(activeData.anchors?.workplace?.lat) && Number.isFinite(activeData.anchors?.workplace?.lng) && (
+                <Marker position={[activeData.anchors.workplace.lat, activeData.anchors.workplace.lng]} alt="Workplace" title="Workplace">
                   <Popup>
                     <strong>Workplace</strong>
                   </Popup>
@@ -577,6 +609,7 @@ export default function CentreCommute({
   return (
     <CentreCommuteView
       currentUser={currentUser}
+      centreId={centreId}
       profileId={profileId}
       workplaceConfigured={workplaceConfigured}
       centre={centre}
@@ -584,6 +617,7 @@ export default function CentreCommute({
       loading={session.loading}
       error={session.error}
       data={session.data}
+      setData={session.setData}
       mode={session.mode}
       directBaselineStatus={session.directBaselineStatus}
       directBaselineError={session.directBaselineError}
