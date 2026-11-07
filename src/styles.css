@@ -318,6 +318,50 @@
   background: #f4f7f2;
 }
 
+/* Map tiles are independent from location pins. Keep
+   anchor identity visible even when the popup is closed. */
+.leaflet-div-icon.map-anchor-div-icon {
+  background: transparent;
+  border: 0;
+}
+.map-anchor-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 3px 9px 3px 3px;
+  border: 1px solid #d8e1d5;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 2px 7px rgb(26 44 32 / 24%);
+  color: #253a2e;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+.map-anchor-symbol {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: #fff;
+}
+.map-anchor-symbol svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.map-anchor-home .map-anchor-symbol { background: #26734d; }
+.map-anchor-work .map-anchor-symbol { background: #315d9b; }
+.map-anchor-centre .map-anchor-symbol { background: #b45c2d; }
+
 .centre-map-loading,
 .centre-map-unavailable {
   display: flex;
