@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { failClosedFetch, jsonResponse } from './support/fetch.js';
 
 const authHarness = vi.hoisted(() => ({
@@ -128,11 +128,20 @@ describe('importance ratings and backend matching flow', () => {
       return { user };
     });
     await renderApp();
-    fireEvent.click(screen.getByRole('button', { name: /continue with google/i }));
     if (waitForOverview) {
-      await waitFor(() => expect(screen.getByText('Overview', { selector: 'b' })).toBeTruthy());
-    } else {
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /continue with google/i }));
+        await waitFor(() => expect(screen.getByText('Overview', { selector: 'b' })).toBeTruthy());
+      });
       await waitFor(() => expect(requests.some((request) => request.path === '/api/v1/profile' && request.method === 'GET')).toBe(true));
+      await openPage('Family profile');
+      await screen.findByRole('slider', { name: 'Travel fit' });
+      await openPage('Overview');
+    } else {
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /continue with google/i }));
+        await waitFor(() => expect(requests.some((request) => request.path === '/api/v1/profile' && request.method === 'GET')).toBe(true));
+      });
     }
   }
 
@@ -233,5 +242,213 @@ describe('importance ratings and backend matching flow', () => {
     const match = requests.find((request) => request.path === '/api/v1/centres/match');
     expect(match.body).toEqual({ profile_id: 'saved-family-1', top_n: 10 });
     await screen.findByText('Showing 10 matches');
+  });
+
+  it('retains edited ratings after an automatic save fails and Retry saves the latest values before matching', async () => {
+    await signIn();
+    await openPage('Family profile');
+    await screen.findByRole('slider', { name: 'Travel fit' });
+    await openPage('Find my matches');
+    await screen.findByText('Showing 10 matches');
+    const slider = screen.getByRole('slider', { name: 'Travel fit' });
+    const originalMatchCount = requests.filter((request) => request.path === '/api/v1/centres/match').length;
+    let failSave = true;
+    fetchMock.mockImplementation(async (input, options = {}) => {
+      const path = new URL(input).pathname;
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      requests.push({ path, method, body });
+      if (path === '/api/v1/profile/saved-family-1' && method === 'PUT') {
+        if (failSave) return jsonResponse(vi, { detail: 'Save unavailable' }, 503);
+        profile = { ...profile, ...body };
+        return jsonResponse(vi, profile);
+      }
+      if (path === '/api/v1/centres/match' && method === 'POST') {
+        return jsonResponse(vi, { profile_id: profile.profile_id, results });
+      }
+      return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
+    });
+    fireEvent.change(slider, { target: { value: '5' } });
+    await screen.findByRole('button', { name: /retry save/i });
+    expect(slider.value).toBe('5');
+    expect(screen.getByText('Showing 10 matches')).toBeTruthy();
+    expect(requests.filter((request) => request.path === '/api/v1/centres/match')).toHaveLength(originalMatchCount);
+
+    failSave = false;
+    fireEvent.click(screen.getByRole('button', { name: /retry save/i }));
+    await waitFor(() => expect(requests.filter((request) => request.path === '/api/v1/centres/match')).toHaveLength(originalMatchCount + 1));
+    const lastSave = requests.filter((request) => request.path === '/api/v1/profile/saved-family-1').at(-1);
+    expect(lastSave.body.travel_weight).toBe(5);
+    const latestSaveIndex = requests.findLastIndex((request) => request.path === '/api/v1/profile/saved-family-1');
+    const latestMatchIndex = requests.findLastIndex((request) => request.path === '/api/v1/centres/match');
+    expect(latestSaveIndex).toBeLessThan(latestMatchIndex);
+  });
+
+  it('keeps prior matches visible and marked outdated when a fresh matching request fails', async () => {
+    await signIn();
+    await openPage('Family profile');
+    await screen.findByRole('slider', { name: 'Travel fit' });
+    await openPage('Find my matches');
+    await screen.findByText('Showing 10 matches');
+    fetchMock.mockImplementation(async (input, options = {}) => {
+      const path = new URL(input).pathname;
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      requests.push({ path, method, body });
+      if (path === '/api/v1/centres/match' && method === 'POST') throw new Error('Matching unavailable');
+      return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
+    });
+    fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
+    await screen.findByText(/results are out of date/i);
+    expect(screen.getByRole('heading', { name: 'Backend Centre 1' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /retry matching/i })).toBeTruthy();
+  });
+
+  it('keeps a pending importance edit when navigating to Family profile', async () => {
+    await signIn();
+    await openPage('Family profile');
+    await screen.findByRole('slider', { name: 'Travel fit' });
+    await openPage('Find my matches');
+    await screen.findByText('Showing 10 matches');
+    fireEvent.change(screen.getByRole('slider', { name: 'Travel fit' }), { target: { value: '4' } });
+    await openPage('Family profile');
+    expect(screen.getByRole('slider', { name: 'Travel fit' }).value).toBe('4');
+    await waitFor(() => expect(requests.some((request) => request.path === '/api/v1/profile/saved-family-1' && request.method === 'PUT' && request.body.travel_weight === 4)).toBe(true), { timeout: 3000 });
+  });
+
+  it('explains no-result failures and recovers to a successful empty result after save Retry', async () => {
+    await signIn();
+    await openPage('Family profile');
+    await screen.findByRole('slider', { name: 'Travel fit' });
+    let failSave = true;
+    let failFirstMatch = true;
+    fetchMock.mockImplementation(async (input, options = {}) => {
+      const path = new URL(input).pathname;
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      requests.push({ path, method, body });
+      if (path === '/api/v1/profile/saved-family-1' && method === 'PUT') {
+        if (failSave) return jsonResponse(vi, { detail: 'Save unavailable' }, 503);
+        profile = { ...profile, ...body };
+        return jsonResponse(vi, profile);
+      }
+      if (path === '/api/v1/centres/match' && method === 'POST') {
+        if (failFirstMatch) {
+          failFirstMatch = false;
+          throw new Error('Matching unavailable');
+        }
+        return jsonResponse(vi, { profile_id: profile.profile_id, results: [] });
+      }
+      return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
+    });
+    await openPage('Find my matches');
+    await screen.findByRole('button', { name: /retry matching/i });
+    fireEvent.change(screen.getByRole('slider', { name: 'Travel fit' }), { target: { value: '5' } });
+    await screen.findByRole('button', { name: /retry save/i });
+    expect(screen.queryByRole('heading', { name: 'Backend Centre 1' })).toBeNull();
+    failSave = false;
+    fireEvent.click(screen.getByRole('button', { name: /retry save/i }));
+    await screen.findByRole('heading', { name: 'No matches returned' });
+    expect(screen.getByText(/did not return any centres/i)).toBeTruthy();
+  });
+
+  it('ignores a delayed earlier match response after a newer rating run completes', async () => {
+    await signIn();
+    await openPage('Family profile');
+    await screen.findByRole('slider', { name: 'Travel fit' });
+    await openPage('Find my matches');
+    await screen.findByText('Showing 10 matches');
+    const deferred = [];
+    let matchingCalls = 0;
+    fetchMock.mockImplementation(async (input, options = {}) => {
+      const path = new URL(input).pathname;
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      requests.push({ path, method, body });
+      if (path === '/api/v1/profile/saved-family-1' && method === 'PUT') {
+        profile = { ...profile, ...body };
+        return jsonResponse(vi, profile);
+      }
+      if (path === '/api/v1/centres/match' && method === 'POST') {
+        matchingCalls += 1;
+        if (matchingCalls === 1) return new Promise((resolve) => deferred.push(resolve));
+        return jsonResponse(vi, { profile_id: profile.profile_id, results: [{ ...results[0], centre_name: 'Latest Centre' }] });
+      }
+      return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
+    });
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Travel fit' }), { target: { value: '4' } });
+    await waitFor(() => expect(matchingCalls).toBe(1), { timeout: 3000 });
+    fireEvent.change(screen.getByRole('slider', { name: 'Travel fit' }), { target: { value: '2' } });
+    await waitFor(() => expect(matchingCalls).toBe(2), { timeout: 3000 });
+    deferred[0](jsonResponse(vi, { profile_id: profile.profile_id, results: [{ ...results[0], centre_name: 'Stale Centre' }] }));
+    await screen.findByRole('heading', { name: 'Latest Centre' });
+    expect(screen.queryByRole('heading', { name: 'Stale Centre' })).toBeNull();
+    expect(screen.getByRole('slider', { name: 'Travel fit' }).value).toBe('2');
+  });
+
+  it('serializes overlapping saves so the older write cannot replace the latest rating', async () => {
+    await signIn();
+    await openPage('Family profile');
+    await screen.findByRole('slider', { name: 'Travel fit' });
+    await openPage('Find my matches');
+    await screen.findByText('Showing 10 matches');
+    let releaseFirstSave;
+    const saveBodies = [];
+    fetchMock.mockImplementation(async (input, options = {}) => {
+      const path = new URL(input).pathname;
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      requests.push({ path, method, body });
+      if (path === '/api/v1/profile/saved-family-1' && method === 'PUT') {
+        saveBodies.push(body);
+        if (saveBodies.length === 1) return new Promise((resolve) => { releaseFirstSave = resolve; });
+        profile = { ...profile, ...body };
+        return jsonResponse(vi, profile);
+      }
+      if (path === '/api/v1/centres/match' && method === 'POST') return jsonResponse(vi, { profile_id: profile.profile_id, results });
+      return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
+    });
+    fireEvent.change(screen.getByRole('slider', { name: 'Travel fit' }), { target: { value: '4' } });
+    await waitFor(() => expect(saveBodies).toHaveLength(1), { timeout: 3000 });
+    fireEvent.change(screen.getByRole('slider', { name: 'Travel fit' }), { target: { value: '2' } });
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(saveBodies).toHaveLength(1);
+    releaseFirstSave(jsonResponse(vi, { ...profile, travel_weight: 4 }));
+    await waitFor(() => expect(saveBodies).toHaveLength(2), { timeout: 3000 });
+    expect(saveBodies[0].travel_weight).toBe(4);
+    expect(saveBodies[1].travel_weight).toBe(2);
+    await waitFor(() => expect(profile.travel_weight).toBe(2));
+  });
+
+  it('drops pending personal matches when the signed-in family changes', async () => {
+    await signIn();
+    await openPage('Family profile');
+    await screen.findByRole('slider', { name: 'Travel fit' });
+    await openPage('Find my matches');
+    await screen.findByText('Showing 10 matches');
+    const priorImplementation = fetchMock.getMockImplementation();
+    let releaseMatch;
+    let pendingMatchCount = 0;
+    fetchMock.mockImplementation((input, options = {}) => {
+      const path = new URL(input).pathname;
+      if (path === '/api/v1/centres/match' && (options.method || 'GET') === 'POST') {
+        pendingMatchCount += 1;
+        return new Promise((resolve) => { releaseMatch = resolve; });
+      }
+      return priorImplementation(input, options);
+    });
+    fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
+    await waitFor(() => expect(pendingMatchCount).toBe(1));
+    const nextUser = {
+      uid: 'another-family', email: 'other@example.com', emailVerified: true,
+      providerId: 'google.com', getIdToken: vi.fn().mockResolvedValue('other-token'),
+    };
+    authHarness.currentUser = nextUser;
+    authHarness.listener(nextUser);
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Backend Centre 1' })).toBeNull());
+    releaseMatch(jsonResponse(vi, { profile_id: 'saved-family-1', results: [{ ...results[0], centre_name: 'Previous family result' }] }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(screen.queryByRole('heading', { name: 'Previous family result' })).toBeNull();
   });
 });
