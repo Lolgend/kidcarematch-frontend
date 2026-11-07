@@ -2,7 +2,7 @@
 
 ## Automated checks
 
-- `npm run test:unit`: 246 tests passed across 15 files.
+- `npm run test:unit`: 250 tests passed across 15 files after merging the latest integration tip (including its commute coverage).
 - `npm run build`: passed. Vite reported the existing large JavaScript chunk warning (about 1.05 MB before gzip).
 - `tests/api/centres.test.js`: added coverage that postal-prefix parameters are serialized for the existing directory endpoint.
 
