@@ -21,6 +21,7 @@ import {
 import { auth } from './firebase';
 import AdminDashboard from './admin/AdminDashboard';
 import CentreCommute from './commute/CentreCommute';
+import MatchesCommute from './commute/MatchesCommute.jsx';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
 import { centreDetailsPath, centreIdFromPath } from './centreDetailsRoute';
@@ -2659,6 +2660,11 @@ function App() {
                     />
                   )}
 
+                  {matchStatus === 'done' && ranked.length > 0 && (
+                    <MatchesCommute centres={ranked.slice(0, 10)} currentUser={currentUser} profileId={profileId}
+                      profile={profile} onSignIn={() => setAuthMode('login')} />
+                  )}
+
                   {matchStatus === 'done' && ranked.slice(0, 10).map((centre, index) => (
                     <article className="panel centre-card" key={centre.id} style={{ marginBottom: 16 }}>
                       <div className="centre-card-top">
@@ -2682,8 +2688,7 @@ function App() {
                       <p>
                         <strong>{money(centre.fee)}</strong> / month ({levelLabel(matchRun.level)},{' '}
                         {matchRun.citizenship}, before subsidy)<br />
-                        Vacancy: {centre.vacancyLabel}<br />
-                        Travel: {centre.locationLabel}
+                        Vacancy: {centre.vacancyLabel}
                       </p>
 
                       <p className="fine-print">
