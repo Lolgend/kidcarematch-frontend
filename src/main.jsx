@@ -31,6 +31,7 @@ import { centreDetailsPath, centreIdFromPath } from './centreDetailsRoute';
 import { claimCentreReturnTab, clearCentreReturnContext, hasCentreReturnAccount, loadCentreReturnContext, normalizeCentreComparisonContext, protectCentreReturnQuery, restoreCentreReturnQuery, saveCentreReturnContext } from './centreReturnContext';
 import {
   getCentres,
+  matchCentres,
   getCentreById,
   getCentreByCode,
   getCentreSummary,
@@ -56,12 +57,7 @@ import {
   PROFILE_DEFAULTS,
   WEIGHT_KEYS,
   WEIGHT_LABELS,
-  RANK_WEIGHTS,
-  priorityOrder,
-  weightsFromOrder,
   normalizeWeights,
-  setRank,
-  weightsFromCostShare,
   nextMonthValue,
   validateFamilyProfile,
   isProfileComplete,
@@ -149,59 +145,6 @@ const websiteHref = (url) => {
 
 const CITIZENSHIP_LABELS = { SC: 'Singapore citizen', SPR: 'Permanent resident', OTHERS: 'Other' };
 
-// Best vacancy score for the chosen level, from the centre's vacancy records.
-function vacancyInfo(vacancies, level, targetMonth) {
-  const monthIndex = (value) => {
-    const m = /^(\d{4})-(\d{2})/.exec(String(value ?? ''));
-    return m ? Number(m[1]) * 12 + Number(m[2]) : null;
-  };
-  const target = monthIndex(targetMonth);
-  let score = 0;
-  let label = 'No open vacancy listed';
-  (vacancies || [])
-    .filter((record) => record.level_type === level)
-    .forEach((record) => {
-      const status = String(record.vacancy_status || '').toLowerCase();
-      const base =
-        status.includes('immediate') ? 100 :
-        status.includes('available') && !status.includes('not') ? 80 :
-        status.includes('wait') ? 30 : 0;
-      // A vacancy in your preferred enrolment month scores in full; each month away costs 10%.
-      const recordMonth = monthIndex(record.enrollment_month_year);
-      const gap = target != null && recordMonth != null ? Math.abs(recordMonth - target) : 0;
-      const value = Math.round(base * Math.max(0.5, 1 - 0.1 * gap));
-      if (value > score) {
-        score = value;
-        label = `${record.vacancy_status} (${monthYear(record.enrollment_month_year)})`;
-      }
-    });
-  return { score, label };
-}
-
-// Lowest listed monthly fee (before subsidy) for the chosen level and citizen type.
-function feeFor(services, level, citizenship) {
-  const fees = (services || [])
-    .filter((item) => item.level === level && item.citizenship_type === citizenship)
-    .map((item) => Number(item.fee))
-    .filter(Number.isFinite);
-  return fees.length ? Math.min(...fees) : null;
-}
-
-// The backend has no travel-time data, so closeness is based on postal codes:
-// same 2-digit postal sector = nearby, same first digit = same broad region.
-function locationFit(postal, anchors) {
-  const places = anchors.filter(Boolean);
-  if (!postal || !places.length) return { score: 0, label: 'Location unknown' };
-  const sector = Number(postal.slice(0, 2));
-  const gaps = places.map((a) => Math.abs(Number(a.slice(0, 2)) - sector));
-  const closest = Math.min(...gaps);
-  if (closest === 0) return { score: 100, label: 'Same postal sector as you' };
-  if (closest === 1) return { score: 75, label: 'Next to your postal sector' };
-  if (places.some((a) => a[0] === postal[0])) return { score: 50, label: 'Same region' };
-  return { score: 0, label: 'Further away' };
-}
-
-const profileKey = (uid) => `kidcare-profile:${uid}`;
 const LOCATION_PREF_LABELS = { HOME: 'Near home', WORKPLACE: 'Near workplace', EITHER: 'Near home or workplace' };
 
 // Districts come from GET /api/v1/centres/districts (first 2 digits of the postal code)
@@ -407,9 +350,9 @@ function focusCentreOriginControl(origin) {
 function matchControlsFromOrigin(origin) {
   const budget = Number(origin?.matchControls?.budget);
   const weights = origin?.matchControls?.weights;
-  const validWeights = weights && ['vacancy', 'cost', 'travel'].every((key) => [15, 35, 50].includes(Number(weights[key]))) &&
-    Number(weights.vacancy) + Number(weights.cost) + Number(weights.travel) === 100 &&
-    new Set(['vacancy', 'cost', 'travel'].map((key) => Number(weights[key]))).size === 3;
+  const validWeights = weights && ['vacancy', 'cost', 'travel'].every((key) =>
+    Number.isInteger(Number(weights[key])) && Number(weights[key]) >= 1 && Number(weights[key]) <= 5
+  );
   if (!Number.isFinite(budget) || budget < 1 || budget > 1000000 || !validWeights) return null;
   return { budget, weights: { vacancy: Number(weights.vacancy), cost: Number(weights.cost), travel: Number(weights.travel) } };
 }
@@ -456,28 +399,28 @@ function NotificationPanel({ items, unread, error, onOpen, onReadAll }) {
   );
 }
 
-// Rank the three match factors 1-3; each rank has a preset weight (50% / 35% / 15%).
-function PriorityRanking({ weights, onChange }) {
-  const order = priorityOrder(weights);
+function ImportanceRatings({ ratings, onChange }) {
   return (
     <>
       {WEIGHT_KEYS.map((key) => {
-        const rank = order.indexOf(key);
         return (
-          <div className="rank-row" key={key}>
+          <label className="rank-row importance-row" key={key}>
             <span>{WEIGHT_LABELS[key]}</span>
-            <select
-              value={rank}
+            <input
+              type="range"
+              min="1"
+              max="5"
+              step="1"
+              value={ratings[key]}
               onChange={(e) => onChange(key, Number(e.target.value))}
-              aria-label={`${WEIGHT_LABELS[key]} priority`}
-            >
-              {RANK_WEIGHTS.map((_, i) => <option key={i} value={i}>Rank {i + 1}</option>)}
-            </select>
-            <b>{RANK_WEIGHTS[rank]}%</b>
-          </div>
+              aria-label={WEIGHT_LABELS[key]}
+              aria-valuetext={`${ratings[key]} out of 5`}
+            />
+            <output>{ratings[key]}</output>
+          </label>
         );
       })}
-      <p className="fine-print rank-note">Each rank can be used once. Picking a rank swaps it with the factor that had it.</p>
+      <p className="fine-print rank-note">1 = least important; 5 = most important. Ratings can tie. Matching weights are proportional to each rating's share of the total.</p>
     </>
   );
 }
@@ -624,8 +567,7 @@ export function App() {
       focusCentreOriginControl(origin);
     }, 50);
   }, [centresLoading, matchCandidates, matchStatus, page, selectedCentre]);
-  const matchDetailCache = useRef(new Map());
-  const [weights, setWeights] = useState({ vacancy: 50, cost: 35, travel: 15 });
+  const [weights, setWeights] = useState({ ...PROFILE_DEFAULTS.weights });
   const [scoreInfoOpen, setScoreInfoOpen] = useState(false);
   useEffect(() => {
     if (!scoreInfoOpen) return undefined;
@@ -640,8 +582,8 @@ export function App() {
   const [profileForm, setProfileForm] = useState(() => ({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() }));
   const [profileSaving, setProfileSaving] = useState(false);
   const setField = (key, value) => setProfileForm((current) => ({ ...current, [key]: value }));
-  const updateProfileRank = (key, rank) =>
-    setProfileForm((current) => ({ ...current, weights: setRank(current.weights, key, rank) }));
+  const updateProfileRating = (key, rating) =>
+    setProfileForm((current) => ({ ...current, weights: { ...current.weights, [key]: rating } }));
 
   // Push the saved profile into the matching engine's inputs.
   const applyProfileToMatching = (p) => {
@@ -1246,7 +1188,7 @@ export function App() {
           compareWatchlistOnly: page === 'Compare centres' ? compareWatchlistOnly : undefined,
           compareScrollY: page === 'Compare centres' ? window.scrollY : undefined,
           compareSelectionScrollY: page === 'Compare centres' ? compareSelectionScrollY : undefined,
-          matchSnapshot: page === 'Find my matches' ? ranked.map(({ id, score, fee, vf, cf, tf, vacancyLabel, locationLabel }) => ({ id: String(id), score, fee, vf, cf, tf, vacancyLabel, locationLabel })) : null,
+          matchSnapshot: page === 'Find my matches' ? ranked : null,
           matchControls: page === 'Find my matches' ? { budget: Number(budget), weights: { ...weights } } : null,
           scrollY: window.scrollY,
           focusCentreId: String(centre.id),
@@ -1815,11 +1757,10 @@ export function App() {
     notify(`Watchlist sync failed: ${error.message}`);
   }
 };
-  // Priorities can be tweaked right on the matches page; results re-rank instantly
-  // and the change is saved back to the family profile.
-  const updateRank = (key, rank) => {
+  // Importance changes on this page save after a short pause before matching again.
+  const updateRating = (key, rating) => {
     setRestoredMatchSnapshot(null);
-    setWeights((current) => setRank(current, key, rank));
+    setWeights((current) => ({ ...current, [key]: rating }));
   };
 
   useEffect(() => {
@@ -1827,12 +1768,18 @@ export function App() {
     if (JSON.stringify(weights) === JSON.stringify(profile.weights)) return undefined;
     const timer = setTimeout(async () => {
       const next = { ...profile, weights };
-      setProfile(next);
       setProfileForm((form) => ({ ...form, weights }));
-      try { localStorage.setItem(profileKey(currentUser.uid), JSON.stringify(next)); } catch { /* ignore */ }
       if (profileId) {
-        try { await updateFamilyProfile(profileId, toApiProfile(next, profileName)); }
-        catch (error) { console.warn('Priority sync:', error.message); }
+        try {
+          const savedResponse = await updateFamilyProfile(profileId, toApiProfile(next, profileName));
+          const savedProfile = fromApiProfile(savedResponse || toApiProfile(next, profileName), next);
+          setProfile(savedProfile);
+          setProfileForm(savedProfile);
+          setWeights(savedProfile.weights);
+          await runMatching(savedProfile);
+        } catch (error) {
+          console.warn('Importance rating save:', error.message);
+        }
       }
     }, 800);
     return () => clearTimeout(timer);
@@ -1849,77 +1796,11 @@ export function App() {
     });
   }, [centres, query]);
 
-  // Rank the fetched candidates. Sliders re-rank instantly; no refetch is needed.
-  const ranked = useMemo(() => {
-    if (!matchRun) return [];
-    if (restoredMatchSnapshot?.length) {
-      const candidatesById = new Map(matchCandidates.map((candidate) => [String(candidate.centre.id), candidate]));
-      return restoredMatchSnapshot.map((result) => {
-        const candidate = candidatesById.get(String(result.id));
-        if (!candidate) return null;
-        return {
-          ...candidate.centre,
-          ...candidate.detail,
-          id: candidate.centre.id,
-          name: candidate.centre.name,
-          score: result.score,
-          fee: result.fee,
-          vf: result.vf,
-          cf: result.cf,
-          tf: result.tf,
-          vacancyLabel: result.vacancyLabel,
-          locationLabel: result.locationLabel,
-        };
-      }).filter(Boolean);
-    }
-    const anchors = [matchRun.home, matchRun.work];
-
-    return matchCandidates
-      .map(({ centre, detail }) => {
-        const fee = feeFor(detail.services, matchRun.level, matchRun.citizenship);
-        if (fee == null) return null; // no listed fee for this level/citizen type: can't score cost
-
-        const vacancyResult = vacancyInfo(detail.vacancies, matchRun.level, matchRun.enrolMonth);
-        const place = locationFit(centre.postal, anchors);
-        const transport = Boolean(detail.transport_provided);
-
-        const vacancyFit = vacancyResult.score;
-        // Within budget: 100 down to 70 as the fee approaches the budget. Over budget: falls from 70.
-        const costFit = fee <= budget
-          ? Math.round(100 - 30 * (fee / budget))
-          : Math.max(0, Math.round(70 * (budget / fee)));
-        const travelFit = transport ? 100 : place.score;
-
-        const score = Math.round(
-          (vacancyFit * weights.vacancy + costFit * weights.cost + travelFit * weights.travel) / 100
-        );
-
-        return {
-          ...centre,
-          ...detail,
-          id: centre.id,
-          name: centre.name,
-          fee,
-          vf: vacancyFit,
-          cf: costFit,
-          tf: travelFit,
-          score,
-          vacancyLabel: vacancyResult.label,
-          locationLabel: transport ? 'Centre provides transport' : place.label
-        };
-      })
-      .filter(Boolean)
-      // Ties (common when a priority is set to 0%) are broken by overall balance, then cheaper fee,
-      // so moving the sliders visibly reshuffles the list.
-      .sort((a, b) =>
-        b.score - a.score ||
-        (b.vf + b.cf + b.tf) - (a.vf + a.cf + a.tf) ||
-        a.fee - b.fee
-      );
-  }, [matchCandidates, matchRun, budget, weights, restoredMatchSnapshot]);
+  // The backend owns matching scores and order. Keep each result intact for centre actions.
+  const ranked = matchCandidates;
 
   useEffect(() => {
-    if (page !== 'Find my matches' || matchStatus !== 'loading' || !restoredMatchSnapshot?.length || !profile) return undefined;
+    if (page !== 'Find my matches' || matchStatus !== 'loading' || !Array.isArray(restoredMatchSnapshot) || !profile) return undefined;
     const generation = ++matchRestoreGenerationRef.current;
     const restoredRun = {
       level: profile.level,
@@ -1929,116 +1810,44 @@ export function App() {
       enrolMonth: profile.enrolMonth,
     };
     setMatchRun(restoredRun);
-    Promise.all(restoredMatchSnapshot.map(async (result) => {
-      const detail = await getCentreById(result.id);
-      const centre = mapCentre(detail);
-      return { centre: { ...centre, id: result.id }, detail };
-    })).then((candidates) => {
-      if (generation !== matchRestoreGenerationRef.current) return;
-      setMatchCandidates(candidates);
-      setMatchStatus('done');
-      setMatchMessage('Restored your previous match results.');
-    }).catch((error) => {
-      if (generation !== matchRestoreGenerationRef.current) return;
-      setMatchCandidates([]);
-      setMatchStatus('error');
-      setMatchMessage(error.message || 'Your previous match results could not be restored.');
-    });
+    if (generation !== matchRestoreGenerationRef.current) return;
+    setMatchCandidates(restoredMatchSnapshot);
+    setMatchStatus('done');
+    setMatchMessage('Restored your previous matches.');
     return () => { matchRestoreGenerationRef.current += 1; };
   }, [matchStatus, page, profile, restoredMatchSnapshot]);
 
-  const runMatching = async () => {
+  const runMatching = async (savedProfile = profile) => {
     setRestoredMatchSnapshot(null);
-    const home = matchForm.home.trim();
-    const work = matchForm.work.trim();
-    if (!/^\d{6}$/.test(home)) {
-      notify('Enter your 6-digit home postal code.');
+    const savedProfileId = savedProfile?.profileId || savedProfile?.profile_id || profileId;
+    if (!savedProfileId) {
+      notify('Save your family profile before finding matches.');
       return;
     }
-    if (work && !/^\d{6}$/.test(work)) {
-      notify('Workplace postal code must be 6 digits.');
-      return;
-    }
-
     setMatchStatus('loading');
-    setMatchMessage('Finding centres with open vacancies near you…');
+    setMatchMessage('Finding matches using your saved preferences…');
     setMatchCandidates([]);
 
     try {
-      const loadCentresFor = async (prefixes) => {
-        const pages = await Promise.all(
-          prefixes.map((prefix) =>
-            getCentres({ level: matchForm.level, postal_prefix: prefix, limit: 100 })
-          )
-        );
-        const byId = new Map();
-        pages.forEach((page) => {
-          const items = Array.isArray(page) ? page : page?.items || [];
-          items.forEach((item) => byId.set(item.centre_id, item));
-        });
-        return [...byId.values()];
-      };
-
-      const sectors = [...new Set([home.slice(0, 2), work && work.slice(0, 2)].filter(Boolean))];
-      let list = await loadCentresFor(sectors);
-      let widened = false;
-      let nearby = false;
-
-      if (list.length < 15) {
-        // Too few in the exact sectors: also look at the neighbouring sectors.
-        const neighbours = new Set();
-        sectors.forEach((sector) => {
-          [Number(sector) - 1, Number(sector) + 1]
-            .filter((n) => n >= 1 && n <= 82)
-            .forEach((n) => neighbours.add(String(n).padStart(2, '0')));
-        });
-        sectors.forEach((sector) => neighbours.delete(sector));
-        if (neighbours.size) {
-          const extra = await loadCentresFor([...neighbours]);
-          const known = new Set(list.map((item) => item.centre_id));
-          list = [...list, ...extra.filter((item) => !known.has(item.centre_id))];
-          nearby = true;
-        }
-      }
-
-      if (list.length < 5) {
-        const regions = [...new Set([home[0], work && work[0]].filter(Boolean))];
-        list = await loadCentresFor(regions);
-        widened = true;
-      }
-
-      // Load each centre's full profile (fees, vacancies, transport), a few at a time.
-      const cache = matchDetailCache.current;
-      const candidates = [];
-      for (let i = 0; i < list.length; i += 8) {
-        setMatchMessage(`Checking fees and vacancies… ${Math.min(i + 8, list.length)} of ${list.length}`);
-        const batch = list.slice(i, i + 8);
-        const results = await Promise.all(
-          batch.map(async (item) => {
-            try {
-              if (!cache.has(item.centre_id)) cache.set(item.centre_id, await getCentreById(item.centre_id));
-              return { centre: mapCentre(item), detail: cache.get(item.centre_id) };
-            } catch (error) {
-              console.warn(`Skipped centre ${item.centre_id}:`, error.message);
-              return null;
-            }
-          })
-        );
-        candidates.push(...results.filter(Boolean));
-      }
-
-      setMatchRun({ level: matchForm.level, citizenship: matchForm.citizenship, home, work, enrolMonth: profile?.enrolMonth });
-      setMatchCandidates(candidates);
+      const response = await matchCentres({ profile_id: savedProfileId, top_n: 10 });
+      const results = Array.isArray(response)
+        ? response
+        : response?.results ?? response?.matches ?? response?.items ?? [];
+      const backendResults = results.map((result) => {
+        const centreData = result.centre ?? result;
+        const centre = mapCentre(centreData);
+        return {
+          ...centre,
+          ...result,
+          id: result.centre_id ?? result.id ?? centre.id,
+          name: result.centre_name ?? result.name ?? centre.name,
+          score: result.overall_fit_score ?? result.score,
+        };
+      });
+      setMatchRun({ level: savedProfile.level, citizenship: savedProfile.citizenship, home: savedProfile.home, work: savedProfile.work || '', enrolMonth: savedProfile.enrolMonth });
+      setMatchCandidates(backendResults);
       setMatchStatus('done');
-      const withFee = candidates.filter(
-        ({ detail }) => feeFor(detail.services, matchForm.level, matchForm.citizenship) != null
-      ).length;
-      const noFee = candidates.length - withFee;
-      setMatchMessage(
-        `${withFee} centre(s) with an open ${levelLabel(matchForm.level)} vacancy ` +
-        (widened ? 'in your wider region' : nearby ? 'in and next to your postal sector' : 'in your postal sector') +
-        (noFee ? ` (${noFee} more not ranked: no fee listed for this level and citizenship).` : '.')
-      );
+      setMatchMessage(results.length ? 'Matches use your saved family preferences.' : 'No matches were returned for your saved preferences.');
     } catch (error) {
       setMatchStatus('error');
       setMatchMessage(error.message || 'Could not load matches.');
@@ -2665,7 +2474,7 @@ export function App() {
                       </div>
 
                       <div className="weight-title">
-                        <h4 className="title-with-help">What matters most? <button
+                        <h4 className="title-with-help">Importance ratings <button
                           type="button"
                           className="info-btn small"
                           aria-label="How match scores work"
@@ -2673,9 +2482,9 @@ export function App() {
                           onClick={() => setScoreInfoOpen(true)}
                         >
                           <CircleHelp size={12} />
-                        </button></h4><span>Rank 1 = 50% · 2 = 35% · 3 = 15%</span>
+                        </button></h4><span>Rate each factor from 1 to 5</span>
                       </div>
-                      <PriorityRanking weights={profileForm.weights} onChange={updateProfileRank} />
+                      <ImportanceRatings ratings={profileForm.weights} onChange={updateProfileRating} />
                     </div>
 
                     <div className="form-footer">
@@ -2901,14 +2710,14 @@ export function App() {
               <PageTitle
                 eyebrow="PERSONALISED PRESCHOOL MATCHING"
                 title="Your family's kind of fit"
-                subtitle="Tell us what you need. We rank centres with an open vacancy using real fees, vacancies and transport."
+                subtitle="See centre recommendations based on your saved family preferences."
               />
 
               <div className="matching-layout">
                 <section className="panel preference-panel">
                   <div className="panel-heading">
                     <div className="panel-icon"><SlidersHorizontal size={19} /></div>
-                    <div><h3>Your family profile</h3><p>Details come from your profile. Adjust priorities here.</p></div>
+                    <div><h3>Your family profile</h3><p>Details come from your profile. Adjust importance here.</p></div>
                   </div>
 
                   {profile ? (
@@ -2923,7 +2732,7 @@ export function App() {
                       </dl>
 
                       <div className="weight-title">
-                        <h4 className="title-with-help">What matters most? <button
+                      <h4 className="title-with-help">Importance ratings <button
                       type="button"
                       className="info-btn small"
                       aria-label="How match scores work"
@@ -2931,14 +2740,14 @@ export function App() {
                       onClick={() => setScoreInfoOpen(true)}
                     >
                       <CircleHelp size={12} />
-                    </button></h4><span>Rank 1 = 50% · 2 = 35% · 3 = 15%</span>
+                    </button></h4><span>Rate each factor from 1 to 5</span>
                       </div>
-                      <PriorityRanking weights={weights} onChange={updateRank} />
+                      <ImportanceRatings ratings={weights} onChange={updateRating} />
 
                       <button
                         className="primary-btn full"
                         onClick={runMatching}
-                        disabled={matchStatus === 'loading'}
+                        disabled={matchStatus === 'loading' || JSON.stringify(weights) !== JSON.stringify(profile.weights)}
                       >
                         {matchStatus === 'loading' ? 'Finding matches…' : 'Refresh my matches'} <Sparkles size={16} />
                       </button>
@@ -2949,7 +2758,7 @@ export function App() {
                   ) : (
                     <>
                       <p className="fine-print" style={{ fontSize: 12, marginTop: 0 }}>
-                        Complete your family profile once and we will use it to rank centres here.
+                        Complete your family profile once and we will use it to find matches here.
                       </p>
                       <button className="primary-btn full" onClick={() => openPage('Family profile')}>
                         Complete your profile <ChevronRight size={16} />
@@ -2957,8 +2766,7 @@ export function App() {
                     </>
                   )}
                   <p className="fine-print">
-                    Travel fit uses postal codes (same postal sector or region), not travel time, and counts
-                    as full marks if the centre provides transport. Fees are before subsidy.
+                    Matching uses the saved profile. Displayed commute estimates are separate from matching travel scores.
                   </p>
                 </section>
 
@@ -2967,9 +2775,9 @@ export function App() {
                     <div>
                       <div className="eyebrow">YOUR SHORTLIST</div>
                       <h2>Top matches for your family</h2>
-                      <p>{matchMessage || 'Ranked using your selected priorities'}</p>
+                      <p>{matchMessage || 'Recommendations based on your saved preferences'}</p>
                     </div>
-                    <span className="result-count">{Math.min(ranked.length, 10)} of {ranked.length} results</span>
+                    <span className="result-count">Showing {Math.min(ranked.length, 10)} matches</span>
                   </div>
 
                   {matchStatus === 'idle' && (
@@ -2986,8 +2794,8 @@ export function App() {
                   )}
                   {matchStatus === 'done' && ranked.length === 0 && (
                     <Empty
-                      title="No centres to rank"
-                      text="No nearby centre has an open vacancy and a listed fee for this level and citizenship. Try another level or a different postal code."
+                      title="No matches returned"
+                      text="The matching service did not return any centres for these saved preferences."
                     />
                   )}
 
@@ -2998,21 +2806,30 @@ export function App() {
                         const commute = commuteFor(centre);
                         return <article className="panel centre-card" key={centre.id} style={{ marginBottom: 16 }}>
                           <div className="centre-card-top">
-                            <span className="eyebrow">#{index + 1} · {centre.score}% match</span>
+                            <span className="eyebrow">#{index + 1}{centre.score != null ? ` · ${centre.score}% match` : ''}</span>
                             <button className="icon-btn" aria-label={isSaved(centre.id) ? 'Remove from watchlist' : 'Save to watchlist'} onClick={() => toggleSaved(centre.id)}>
                               <Heart size={18} fill={isSaved(centre.id) ? '#e63946' : 'none'} color={isSaved(centre.id) ? '#e63946' : '#9ca3af'} />
                             </button>
                           </div>
                           <h3>{centre.name}</h3>
                           <p><MapPin size={14} /> {centre.address || 'Address not provided'}</p>
-                          <p>
-                            <strong>{money(centre.fee)}</strong> / month ({levelLabel(matchRun.level)},{' '}
-                            {matchRun.citizenship}, before subsidy)<br />
-                            Vacancy: {centre.vacancyLabel}
-                          </p>
+                          {(centre.fee_breakdown?.published_fee ?? centre.monthly_fee ?? centre.fee ?? centre.fee_breakdown?.monthly_fee ?? centre.fee_breakdown?.listed_monthly_fee) != null && <p>
+                            Published monthly fee: <strong>{money(centre.fee_breakdown?.published_fee ?? centre.monthly_fee ?? centre.fee ?? centre.fee_breakdown?.monthly_fee ?? centre.fee_breakdown?.listed_monthly_fee)}</strong>
+                          </p>}
+                          {(centre.fee_breakdown?.estimated_monthly_payable_fee ?? centre.estimated_net_payable ?? centre.estimated_net_fee ?? centre.fee_breakdown?.estimated_net_payable) != null && <p>
+                            Estimated monthly payable: <strong>{money(centre.fee_breakdown?.estimated_monthly_payable_fee ?? centre.estimated_net_payable ?? centre.estimated_net_fee ?? centre.fee_breakdown?.estimated_net_payable)}</strong>
+                          </p>}
+                          {(centre.fee_breakdown?.estimated_subsidy ?? centre.subsidy_amount ?? centre.fee_breakdown?.subsidy_amount) != null && <p>Estimated subsidy: {money(centre.fee_breakdown?.estimated_subsidy ?? centre.subsidy_amount ?? centre.fee_breakdown?.subsidy_amount)}</p>}
+                          <p>Vacancy: {centre.current_vacancy_status ?? centre.vacancy_status ?? centre.vacancy?.status ?? centre.vacancy_information?.status ?? 'Not provided'}</p>
+                          {centre.enrollment_month_year && <p>Vacancy month: {monthYear(centre.enrollment_month_year)}</p>}
+                          {(centre.travel_breakdown?.commute_duration_mins ?? centre.travel_breakdown?.duration_mins ?? centre.travel_breakdown?.duration_minutes) != null && <p className="fine-print">Matching travel estimate: {centre.travel_breakdown.commute_duration_mins ?? centre.travel_breakdown.duration_mins ?? centre.travel_breakdown.duration_minutes} min{(centre.travel_breakdown.commute_distance_km ?? centre.travel_breakdown.distance_km) != null ? ` · ${centre.travel_breakdown.commute_distance_km ?? centre.travel_breakdown.distance_km} km` : ''}</p>}
                           <MatchCommuteSummary centre={centre} summary={commute.summary} error={commute.errors}
                             loading={commute.loading} workplaceConfigured={Boolean(profile?.work)} onRetry={commute.retry} />
-                          <p className="fine-print">Vacancy {centre.vf}% · Cost {centre.cf}% · Travel {centre.tf}%</p>
+                          <p className="fine-print">{[
+                            ['Vacancy fit', centre.vacancy_fit_score ?? centre.component_scores?.vacancy_fit ?? centre.component_scores?.vacancy],
+                            ['Cost fit', centre.cost_fit_score ?? centre.component_scores?.cost_fit ?? centre.component_scores?.cost],
+                            ['Travel fit', centre.travel_fit_score ?? centre.component_scores?.travel_fit ?? centre.component_scores?.travel],
+                          ].filter(([, score]) => score != null).map(([label, score]) => `${label} ${score}%`).join(' · ')}</p>
                           <div className="centre-tags">
                             {centre.spark_certified && <span>SPARK certified</span>}
                             {centre.gov_subsidy && <span>Government subsidy</span>}
@@ -3302,7 +3119,7 @@ export function App() {
                   </div>
 
                   <div className="weight-title">
-                    <h4 className="title-with-help">What matters most? <button
+                      <h4 className="title-with-help">Importance ratings <button
                       type="button"
                       className="info-btn small"
                       aria-label="How match scores work"
@@ -3310,9 +3127,9 @@ export function App() {
                       onClick={() => setScoreInfoOpen(true)}
                     >
                       <CircleHelp size={12} />
-                    </button></h4><span>Rank 1 = 50% · 2 = 35% · 3 = 15%</span>
+                    </button></h4><span>Rate each factor from 1 to 5</span>
                   </div>
-                  <PriorityRanking weights={profileForm.weights} onChange={updateProfileRank} />
+                  <ImportanceRatings ratings={profileForm.weights} onChange={updateProfileRating} />
                 </div>
 
                 <div className="form-footer">
@@ -3342,7 +3159,7 @@ export function App() {
         </footer>
       </main>
 
-      {scoreInfoOpen && !isOnboardingGated && (
+      {scoreInfoOpen && (
         <div className="modal-backdrop" onClick={() => setScoreInfoOpen(false)}>
           <section
             className="info-modal"
@@ -3368,11 +3185,11 @@ export function App() {
             </div>
             <div className="info-item">
               <h3>3. Travel Fit</h3>
-              <p>Measures how convenient a childcare centre is based on your home location, workplace location and preferred transport mode. Centres with shorter estimated commute times and less additional travel receive higher scores.</p>
+              <p>The matching service calculates Travel fit from your saved family profile. Displayed commute modes and estimates are separate; changing them does not change the matching score.</p>
             </div>
             <div className="info-item overall">
               <h3>Overall Match Score</h3>
-              <p>Your overall match score combines Vacancy Fit, Cost Fit and Travel Fit based on how you rank them: your rank 1 counts for 50%, rank 2 for 35% and rank 3 for 15%.</p>
+              <p>Ratings are independent and can tie. Each factor's share of all three ratings determines its proportional matching weight. For example, ratings of 5/5/1 give matching weights of 5/11, 5/11 and 1/11.</p>
             </div>
 
             <button className="primary-btn full" onClick={() => setScoreInfoOpen(false)}>Got it</button>

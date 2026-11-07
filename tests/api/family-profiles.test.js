@@ -41,8 +41,9 @@ describe("Family Preference Profile API operations", () => {
       profile_name: "Synthetic family",
       service_type: "FULL_DAY",
       enrolment_month: "2027-03",
-      cost_weight: 0.7,
-      travel_weight: 0.3,
+      vacancy_weight: 3,
+      cost_weight: 4,
+      travel_weight: 2,
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(vi, { profile_id: "profile-2", ...payload }, 201));
 
@@ -55,7 +56,7 @@ describe("Family Preference Profile API operations", () => {
   });
 
   it("updates an encoded profile identifier and returns the server response", async () => {
-    const payload = { profile_name: "Edited synthetic family", cost_weight: 0.59, travel_weight: 0.41 };
+    const payload = { profile_name: "Edited synthetic family", vacancy_weight: 1, cost_weight: 5, travel_weight: 2 };
     fetchMock.mockResolvedValueOnce(jsonResponse(vi, { profile_id: "profile / 3", ...payload }));
 
     await expect(api.updateFamilyProfile("profile / 3", payload)).resolves.toEqual({ profile_id: "profile / 3", ...payload });
@@ -63,6 +64,20 @@ describe("Family Preference Profile API operations", () => {
       method: "PUT",
       body: JSON.stringify(payload),
       headers: { Accept: "application/json", "Content-Type": "application/json" },
+    });
+  });
+
+  it("requests backend matches using a saved profile id and result limit", async () => {
+    const payload = { profile_id: "profile-7", top_n: 10 };
+    const matches = { matches: [{ centre_id: "centre-1", overall_fit_score: 87 }] };
+    auth.currentUser = { getIdToken: vi.fn().mockResolvedValue("synthetic-token") };
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, matches));
+
+    await expect(api.matchCentres(payload)).resolves.toEqual(matches);
+    expect(fetchMock).toHaveBeenCalledWith("https://api.invalid/api/v1/centres/match", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: "Bearer synthetic-token" },
     });
   });
 

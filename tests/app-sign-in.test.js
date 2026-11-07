@@ -33,7 +33,7 @@ const completeProfile = {
   level: 'n1', citizenship_status: 'SC', service_required: 'Full Day',
   enrollment_month_year: '2026-12', budget_max: 750, workplace_postal_code: null,
   location_preference: 'HOME', household_income: 0, household_member_count: 1,
-  vacancy_weight: 0.5, cost_weight: 0.35, travel_weight: 0.15,
+  vacancy_weight: 3, cost_weight: 3, travel_weight: 3,
 };
 
 describe('deliberate parent sign-in navigation', () => {
@@ -54,6 +54,8 @@ describe('deliberate parent sign-in navigation', () => {
         '/api/v1/notifications': { items: [], unread_count: 0 },
       };
       if (path in responses) return jsonResponse(vi, responses[path]);
+      if (path === '/api/v1/centres/match' && options.method === 'POST') return jsonResponse(vi, { results: [] });
+      fetchMock.unexpectedCalls.push([input, options]);
       return Promise.reject(new Error(`Unexpected request: ${options.method || 'GET'} ${path}`));
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -69,7 +71,10 @@ describe('deliberate parent sign-in navigation', () => {
     });
   });
 
-  afterEach(() => { vi.clearAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+  afterEach(() => {
+    expect(fetchMock.unexpectedCalls).toEqual([]);
+    vi.clearAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals();
+  });
 
   async function configureSignIn(method, user) {
     if (method === 'email') authHarness.signInWithEmailAndPassword.mockImplementation(async () => {
@@ -120,7 +125,9 @@ describe('deliberate parent sign-in navigation', () => {
         '/api/v1/notifications': { items: [], unread_count: 0 },
       };
       if (path === '/api/v1/profile' && options.method === 'POST') return jsonResponse(vi, completeProfile, 201);
+      if (path === '/api/v1/centres/match' && options.method === 'POST') return jsonResponse(vi, { results: [] });
       if (path in responses) return jsonResponse(vi, responses[path]);
+      fetchMock.unexpectedCalls.push([input, options]);
       return Promise.reject(new Error(`Unexpected request: ${options.method || 'GET'} ${path}`));
     });
     const user = { uid: 'new-family', email: 'new@example.com', emailVerified: true, providerId: 'password' };
