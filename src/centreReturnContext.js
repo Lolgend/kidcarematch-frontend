@@ -103,6 +103,31 @@ export function loadCentreReturnContext(uid, id) {
   return (id && stored.origins && typeof stored.origins === 'object') ? stored.origins[id] || null : null;
 }
 
+// History state carries only an opaque lookup ID. Validate the stored public
+// comparison choices before they are allowed to drive the picker or table.
+export function normalizeCentreComparisonContext(context) {
+  if (!context || context.page !== 'Compare centres') return null;
+  if (!['selection', 'comparison'].includes(context.compareStep)) return null;
+  if (!Array.isArray(context.compareSelectedIds) || context.compareSelectedIds.length > 3) return null;
+  const ids = context.compareSelectedIds.map((id) => String(id ?? '').trim());
+  if (ids.some((id) => !id) || new Set(ids).size !== ids.length) return null;
+  if (context.compareStep === 'comparison' && ids.length < 2) return null;
+  const scrollY = Number(context.compareScrollY ?? context.scrollY ?? 0);
+  if (!Number.isFinite(scrollY) || scrollY < 0 || scrollY > 10_000_000) return null;
+  if (context.compareDistricts != null && !Array.isArray(context.compareDistricts)) return null;
+  const districts = (context.compareDistricts || []).map((district) => String(district ?? '').trim());
+  if (districts.some((district) => !district) || new Set(districts).size !== districts.length) return null;
+  return {
+    page: 'Compare centres',
+    compareStep: context.compareStep,
+    compareQuery: typeof context.compareQuery === 'string' ? context.compareQuery.slice(0, 500) : '',
+    compareWatchlistOnly: context.compareWatchlistOnly === true,
+    compareDistricts: districts.slice(0, 50),
+    compareSelectedIds: ids,
+    compareScrollY: scrollY,
+  };
+}
+
 export function hasCentreReturnAccount(uid) {
   const stored = readJson(sessionStorageOrNull(), STORAGE_KEY);
   return Boolean(stored && stored.version === 1 && stored.uid === (uid || null));
