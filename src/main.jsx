@@ -347,16 +347,6 @@ function focusCentreOriginControl(origin) {
   focus();
 }
 
-function matchControlsFromOrigin(origin) {
-  const budget = Number(origin?.matchControls?.budget);
-  const weights = origin?.matchControls?.weights;
-  const validWeights = weights && ['vacancy', 'cost', 'travel'].every((key) =>
-    Number.isInteger(Number(weights[key])) && Number(weights[key]) >= 1 && Number(weights[key]) <= 5
-  );
-  if (!Number.isFinite(budget) || budget < 1 || budget > 1000000 || !validWeights) return null;
-  return { budget, weights: { vacancy: Number(weights.vacancy), cost: Number(weights.cost), travel: Number(weights.travel) } };
-}
-
 // Dropdown list of vacancy alerts for watchlisted centres.
 function NotificationPanel({ items, unread, error, onOpen, onReadAll }) {
   return (
@@ -546,10 +536,11 @@ export function App() {
   const [restoredMatchSnapshot, setRestoredMatchSnapshot] = useState(null);
   const matchRestoreGenerationRef = useRef(0);
   const [matchCandidates, setMatchCandidates] = useState([]);
-  const [matchStatus, setMatchStatus] = useState('idle'); // idle | loading | done | error
+  const [matchStatus, setMatchStatus] = useState('idle'); // idle | ready | loading | done | error
   const [matchMessage, setMatchMessage] = useState('');
   const matchRequestGenerationRef = useRef(0);
   const ratingEditGenerationRef = useRef(0);
+  const matchPreferenceEditRef = useRef(0);
   const profileWriteQueueRef = useRef(Promise.resolve());
   const [ratingSaveStatus, setRatingSaveStatus] = useState('idle'); // idle | saving | error
   const [ratingSaveMessage, setRatingSaveMessage] = useState('');
@@ -573,6 +564,8 @@ export function App() {
     }, 50);
   }, [centresLoading, matchCandidates, matchStatus, page, selectedCentre]);
   const [weights, setWeights] = useState({ ...PROFILE_DEFAULTS.weights });
+  const latestWeightsRef = useRef(weights);
+  latestWeightsRef.current = weights;
   const [scoreInfoOpen, setScoreInfoOpen] = useState(false);
   useEffect(() => {
     if (!scoreInfoOpen) return undefined;
@@ -588,12 +581,18 @@ export function App() {
   const [profileName, setProfileName] = useState('My family profile');
   const [profileForm, setProfileForm] = useState(() => ({ ...PROFILE_DEFAULTS, enrolMonth: nextMonthValue() }));
   const [profileSaving, setProfileSaving] = useState(false);
-  const setField = (key, value) => setProfileForm((current) => ({ ...current, [key]: value }));
-  const updateProfileRating = (key, rating) =>
+  const setField = (key, value) => {
+    ratingEditGenerationRef.current += 1;
+    setProfileForm((current) => ({ ...current, [key]: value }));
+  };
+  const updateProfileRating = (key, rating) => {
+    ratingEditGenerationRef.current += 1;
     setProfileForm((current) => ({ ...current, weights: { ...current.weights, [key]: rating } }));
+  };
 
   // Push the saved profile into the matching engine's inputs.
   const applyProfileToMatching = (p) => {
+    matchRequestGenerationRef.current += 1;
     setMatchForm({ level: p.level, citizenship: p.citizenship, home: p.home, work: p.work || '' });
     setBudget(Number(p.budget));
     setWeights(p.weights);
@@ -605,11 +604,6 @@ export function App() {
   };
 
   const restoreMatchingOrigin = (origin) => {
-    const controls = matchControlsFromOrigin(origin);
-    if (controls) {
-      setBudget(controls.budget);
-      setWeights(controls.weights);
-    }
     setRestoredMatchSnapshot(origin.matchSnapshot);
     setMatchStatus('loading');
   };
@@ -732,7 +726,17 @@ export function App() {
         return await createFamilyProfile(payload);
       },
       updateProfile: async (id, payload) => {
-        return await updateFamilyProfile(id, payload);
+        const uid = activeAccountIdRef.current;
+        const write = profileWriteQueueRef.current.then(async () => {
+          if (uid !== activeAccountIdRef.current) return null;
+          const response = await updateFamilyProfile(id, payload);
+          if (uid === activeAccountIdRef.current) {
+            latestSavedProfileRef.current = fromApiProfile(response || payload, latestSavedProfileRef.current || PROFILE_DEFAULTS);
+          }
+          return response;
+        });
+        profileWriteQueueRef.current = write.catch(() => undefined);
+        return await write;
       },
       onState: (nextState) => {
         setOnboardingState(nextState);
@@ -1779,8 +1783,13 @@ export function App() {
   // Importance changes on this page save after a short pause before matching again.
   const updateRating = (key, rating) => {
     ratingEditGenerationRef.current += 1;
-    setRatingSaveStatus('idle');
-    setRatingSaveMessage('');
+    matchRequestGenerationRef.current += 1;
+    setRatingSaveStatus('pending');
+    setRatingSaveMessage('Your importance ratings will save before matching.');
+    if (matchStatus === 'loading') {
+      setMatchStatus(matchRun ? 'done' : 'ready');
+      setMatchMessage(matchRun ? 'Your previous results are out of date.' : 'Your preferences changed. Saving before matching…');
+    }
     setWeights((current) => ({ ...current, [key]: rating }));
     setProfileForm((current) => ({ ...current, weights: { ...current.weights, [key]: rating } }));
   };
@@ -1903,7 +1912,15 @@ export function App() {
     profileWriteQueueRef.current = write.catch(() => undefined);
     try {
       const savedProfile = await write;
-      if (!savedProfile || uid !== activeAccountIdRef.current || generation !== ratingEditGenerationRef.current) return;
+      if (!savedProfile || uid !== activeAccountIdRef.current) return;
+      if (generation !== ratingEditGenerationRef.current) {
+        setProfile(savedProfile);
+        if (JSON.stringify(latestWeightsRef.current) === JSON.stringify(savedProfile.weights)) {
+          setRatingSaveStatus('idle');
+          setRatingSaveMessage('');
+        }
+        return;
+      }
       setProfile(savedProfile);
       setProfileForm(savedProfile);
       setWeights(savedProfile.weights);
@@ -1938,14 +1955,9 @@ export function App() {
     }
     if (controller.getState().status === 'saving') return;
     setProfileSaving(true);
-    const save = profileWriteQueueRef.current.then(async () => {
-      if (controller.getState().status === 'saving') return;
+    try {
       await controller.save(profileForm);
       latestSavedProfileRef.current = controller.getState().profile || latestSavedProfileRef.current;
-    });
-    profileWriteQueueRef.current = save.catch(() => undefined);
-    try {
-      await save;
     } finally {
       setProfileSaving(false);
     }
@@ -2830,7 +2842,7 @@ export function App() {
                         onClick={() => (JSON.stringify(weights) === JSON.stringify(profile.weights) ? runMatching() : saveEditedRatings())}
                         disabled={matchStatus === 'loading' || ratingSaveStatus === 'saving'}
                       >
-                        {ratingSaveStatus === 'saving' ? 'Saving preferences…' : matchStatus === 'loading' ? 'Finding matches…' : JSON.stringify(weights) !== JSON.stringify(profile.weights) ? 'Save and find matches' : 'Refresh my matches'} <Sparkles size={16} />
+                        {ratingSaveStatus === 'saving' || ratingSaveStatus === 'pending' ? 'Saving preferences…' : matchStatus === 'loading' ? 'Finding matches…' : JSON.stringify(weights) !== JSON.stringify(profile.weights) ? 'Save and find matches' : 'Refresh my matches'} <Sparkles size={16} />
                       </button>
                       <button className="secondary-btn full" style={{ marginTop: 9 }} onClick={() => openPage('Family profile')}>
                         Edit family profile
@@ -2869,7 +2881,7 @@ export function App() {
                     <button className="secondary-btn" type="button" onClick={() => saveEditedRatings()}>Retry save</button>
                   </p>}
                   {ratingSaveStatus === 'saving' && <p className="fine-print" role="status">{ratingSaveMessage}</p>}
-                  {matchStatus === 'error' && ranked.length > 0 && <p className="notice matches-error" role="alert">
+                  {matchStatus === 'error' && ranked.length > 0 && ratingSaveStatus !== 'error' && <p className="notice matches-error" role="alert">
                     <span><b>Could not refresh matches.</b><br />{matchMessage}</span>
                     <button className="secondary-btn" type="button" onClick={retryMatching} disabled={ratingSaveStatus === 'saving'}>Retry matching</button>
                   </p>}
@@ -2883,6 +2895,9 @@ export function App() {
                       title="Ready when you are"
                       text="Choose your child's level, enter your home postal code and press Find my matches."
                     />
+                  )}
+                  {matchStatus === 'ready' && ratingSaveStatus !== 'error' && (
+                    <Empty title="Saving your preferences" text="Your latest importance ratings will be saved before a fresh match request." />
                   )}
                   {matchStatus === 'loading' && ranked.length === 0 && (
                     <Empty title="Working on it" text={matchMessage} />
