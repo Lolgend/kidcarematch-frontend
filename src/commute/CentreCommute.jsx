@@ -189,7 +189,7 @@ export function summarizeCommute({ data, profileId, mode = "drive", directBaseli
     typeof leg.message === "string" && leg.message.toLowerCase().includes("could not be resolved"));
   const homeUnresolvable = Boolean(data && !hasHomeCoordinate) ||
     Boolean(unresolvedLeg?.message?.toLowerCase().includes("home"));
-  const workplaceUnresolvable = hasConfiguredWorkplace && (!hasWorkplaceCoordinate ||
+  const workplaceUnresolvable = hasConfiguredWorkplace && Boolean(data) && (!hasWorkplaceCoordinate ||
     Boolean(unresolvedLeg?.message?.toLowerCase().includes("workplace")));
   const locationError = homeUnresolvable
     ? "Your saved home location could not be resolved. Edit your family profile to update it."
@@ -202,11 +202,17 @@ export function summarizeCommute({ data, profileId, mode = "drive", directBaseli
     ...(Array.isArray(sample?.direct_route?.reasons) ? sample.direct_route.reasons : []),
     ...legs.flatMap((leg) => Array.isArray(leg?.reasons) ? leg.reasons : []),
   ].map((reason) => reason?.code).filter(Boolean);
+  const retryable = [
+    ...(Array.isArray(sample?.reasons) ? sample.reasons : []),
+    ...(Array.isArray(sample?.comparison?.reasons) ? sample.comparison.reasons : []),
+    ...(Array.isArray(sample?.direct_route?.reasons) ? sample.direct_route.reasons : []),
+    ...legs.flatMap((leg) => Array.isArray(leg?.reasons) ? leg.reasons : []),
+  ].some((reason) => reason?.retryable === true);
   const timingUnverified = reasonCodes.includes("timing_unverified") ||
     legs.some((leg) => leg?.timing?.verified === false) || sample?.comparison?.status === "unavailable" &&
       !reasonCodes.some((code) => code !== "timing_unverified");
   const comparisonUnavailableMessage = !comparisonSetComplete ? "Some centre estimates are missing, so route estimates cannot be compared directly."
-    : !comparisonCompatible ? "Route estimates use different conditions and cannot be compared directly."
+    : !comparisonCompatible ? "Cannot verify that route estimates use the same conditions, so they cannot be compared directly."
     : !hasConfiguredWorkplace ? null
     : directBaselineStatus === "unsupported" ? "Extra travel comparison is not supported for this profile and mode."
       : directBaselineStatus === "disabled" ? "Extra travel comparison is not enabled for this service."
@@ -224,10 +230,12 @@ export function summarizeCommute({ data, profileId, mode = "drive", directBaseli
   return {
     sample, legs, expectedLegs, hasConfiguredWorkplace, hasCompleteTotals, baselineReady,
     directRoute, hasDirectRoute, comparisonAvailable, signedDeviationSeconds, deviationHeadline,
-    homeTravelSeconds: !hasConfiguredWorkplace && hasCompleteTotals && comparisonCompatible && comparisonSetComplete ? sample.totals.duration_seconds : null,
-    homeTravelDistanceMeters: !hasConfiguredWorkplace && hasCompleteTotals && comparisonCompatible && comparisonSetComplete ? sample.totals.distance_meters : null,
+    homeTravelSeconds: !hasConfiguredWorkplace && hasCompleteTotals ? sample.totals.duration_seconds : null,
+    homeTravelDistanceMeters: !hasConfiguredWorkplace && hasCompleteTotals ? sample.totals.distance_meters : null,
+    homeTravelComparable: comparisonCompatible && comparisonSetComplete,
     directFailureMessage: baselineReady ? directRouteFailureMessage(directRoute) : null,
     directFailureRetryable: baselineReady && Array.isArray(directRoute?.reasons) && directRoute.reasons.some((reason) => reason?.retryable === true),
+    retryable,
     directBaselineStatus, locationError, comparisonUnavailableMessage, timingUnverified,
     usableViaLegs,
     directTravelSeconds: hasDirectRoute ? directRoute.totals.duration_seconds : null,

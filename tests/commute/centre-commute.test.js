@@ -49,6 +49,7 @@ vi.mock("leaflet/dist/leaflet.css", () => ({}));
 vi.mock("leaflet", () => ({ divIcon: (options) => options }));
 
 import { CentreCommuteView, summarizeCommute } from "../../src/commute/CentreCommute.jsx";
+import { MatchCommuteSummary } from "../../src/commute/MatchesCommute.jsx";
 
 describe("CentreCommute presentation", () => {
   it("exposes the shared home-only summary for matches and details without inventing a workplace deviation", () => {
@@ -71,7 +72,52 @@ describe("CentreCommute presentation", () => {
       comparisonCompatible: false,
     });
     expect(incomparable.homeTravelSeconds).toBeNull();
-    expect(incomparable.comparisonUnavailableMessage).toContain("different conditions");
+    expect(incomparable.comparisonUnavailableMessage.toLowerCase()).toContain("cannot verify");
+  });
+
+  it("retains a complete home-only route when peer conditions are unavailable", () => {
+    const summary = summarizeCommute({
+      profileId: "prof-1", mode: "drive", workplaceConfigured: false,
+      comparisonCompatible: false, comparisonSetComplete: false,
+      data: {
+        profile_id: "prof-1", mode: "drive",
+        anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 } },
+        samples: [{ kind: "single", via_status: "available",
+          legs: [{ from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap", duration_seconds: 600, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }] }],
+          totals: { duration_seconds: 600, distance_meters: 5000 } }],
+      },
+    });
+    expect(summary.homeTravelSeconds).toBe(600);
+    expect(summary.homeTravelDistanceMeters).toBe(5000);
+    expect(summary.homeTravelComparable).toBe(false);
+    expect(summary.comparisonUnavailableMessage).toContain("Some centre estimates are missing");
+  });
+
+  it("does not call a configured workplace unresolved before route data arrives", () => {
+    const summary = summarizeCommute({
+      data: null, profileId: "prof-1", mode: "drive", workplaceConfigured: true,
+    });
+    expect(summary.locationError).toBeNull();
+  });
+
+  it("retains a retry action for a retryable HTTP 200 via-leg failure with an independent direct route", () => {
+    const summary = summarizeCommute({ data: {
+      profile_id: "prof-1", centre_id: 101, mode: "drive", comparison_contract: "direct_baseline_v1",
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 }, workplace: { lat: 1.28, lng: 103.85 } },
+      evaluation: { evaluation_id: "e1", evaluated_at: "2026-11-07T03:00:00Z", profile_revision: "r1", anchor_revision: "a1" },
+      samples: [{ kind: "single", conditions: { conditions_id: "c1", provider_options_id: "p1" }, via_status: "partial", legs: [
+        { from_anchor: "home", to_anchor: "centre", status: "available", duration_seconds: 600, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }] },
+        { from_anchor: "centre", to_anchor: "workplace", status: "unavailable", reasons: [{ code: "provider_timeout", retryable: true }] },
+      ], totals: null, comparison: { status: "unavailable", reasons: [{ code: "provider_timeout", retryable: true }], certification: null },
+      direct_route: { status: "available", legs: [{ from_anchor: "home", to_anchor: "workplace", status: "available", source: "onemap", duration_seconds: 1800, distance_meters: 9000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.28, lng: 103.85 }], reasons: [] }], totals: { duration_seconds: 1800, distance_meters: 9000 }, reasons: [] } }],
+    }, profileId: "prof-1", mode: "drive", workplaceConfigured: true, directBaselineStatus: "supported" });
+    const html = renderToStaticMarkup(React.createElement(MatchCommuteSummary, {
+      centre: { id: 101 }, summary, error: {}, loading: false, workplaceConfigured: true, onRetry: () => {},
+    }));
+    expect(summary.retryable).toBe(true);
+    expect(summary.directTravelSeconds).toBe(1800);
+    expect(html).toContain("Direct home to workplace");
+    expect(html).toContain("Retry estimate");
   });
 
   it("distinguishes unsupported comparison and retains usable route facts when timing is uncertified", () => {
@@ -100,7 +146,7 @@ describe("CentreCommute presentation", () => {
     const incoherent = summarizeCommute({ data, profileId: "prof-1", mode: "drive", workplaceConfigured: true,
       directBaselineStatus: "supported", comparisonCompatible: false });
     expect(incoherent.comparisonAvailable).toBe(false);
-    expect(incoherent.comparisonUnavailableMessage).toContain("different conditions");
+    expect(incoherent.comparisonUnavailableMessage.toLowerCase()).toContain("cannot verify");
     expect(incoherent.directTravelSeconds).toBe(1800);
     expect(incoherent.usableViaLegs).toHaveLength(1);
   });

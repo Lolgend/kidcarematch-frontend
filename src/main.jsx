@@ -22,7 +22,7 @@ import { auth } from './firebase';
 import AdminDashboard from './admin/AdminDashboard';
 import CentreCommute from './commute/CentreCommute';
 import MatchesCommute, { MatchCommuteSummary } from './commute/MatchesCommute.jsx';
-import CentreComparisonTable from './CentreComparisonTable.jsx';
+import ComparisonCommuteTable from './commute/ComparisonCommuteTable.jsx';
 import { getProfileCommuteContextKey } from './commute/commuteSession.js';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
@@ -3108,21 +3108,22 @@ function App() {
                   </div>
                 </div>
 
-                {compareCentres.length === 0 ? (
-                  <Empty
-                    title="Choose your centres"
-                    text="Select one or more centres above. Their details will appear here."
-                  />
-                ) : (
-                  <CentreComparisonTable
-                    centres={compareCentres}
-                    details={compareDetails}
-                    profile={profile}
-                    onRetry={retryCompareDetails}
-                    onViewDetails={openCentreDetails}
-                    onRemove={removeComparedCentre}
-                  />
-                )}
+                {compareCentres.length === 0 && <Empty
+                  title="Choose your centres"
+                  text="Select two or more centres above. Selected centre identities are still loading or need recovery."
+                />}
+                <ComparisonCommuteTable
+                  selectedIds={compareSelectedIds}
+                  centres={compareCentres}
+                  details={compareDetails}
+                  profile={profile}
+                  profileId={profileId}
+                  currentUser={currentUser}
+                  onSignIn={() => setAuthMode('login')}
+                  onRetryDetails={retryCompareDetails}
+                  onViewDetails={openCentreDetails}
+                  onRemove={removeComparedCentre}
+                />
               </section>}
             </>
           )}

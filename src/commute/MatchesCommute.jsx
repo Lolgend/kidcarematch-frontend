@@ -13,6 +13,7 @@ export function MatchCommuteSummary({ centre, summary, error, loading, workplace
   if (!workplaceConfigured && summary.homeTravelSeconds !== null) return <div className="match-travel-summary">
     <strong>{formatDuration(summary.homeTravelSeconds)} home to centre</strong>
     <span>{formatDistance(summary.homeTravelDistanceMeters)} · No workplace is configured</span>
+    {!summary.homeTravelComparable && <small>Comparison conditions unavailable; this route is shown individually.</small>}
   </div>;
 
   const centreError = error?.[String(centre.id)];
@@ -23,7 +24,7 @@ export function MatchCommuteSummary({ centre, summary, error, loading, workplace
       {leg.from === "home" ? "Home to centre" : "Centre to workplace"}: {formatDuration(leg.durationSeconds)} ({formatDistance(leg.distanceMeters)})
     </span>)}
     {summary.directTravelSeconds !== null && <span>Direct home to workplace: {formatDuration(summary.directTravelSeconds)} ({formatDistance(summary.directTravelDistanceMeters)})</span>}
-    {centreError && <button type="button" className="matches-commute-retry" onClick={onRetry}>Retry estimate</button>}
+    {(centreError || summary.retryable || summary.directBaselineStatus === "error") && <button type="button" className="matches-commute-retry" onClick={onRetry}>Retry estimate</button>}
   </div>;
 }
 
