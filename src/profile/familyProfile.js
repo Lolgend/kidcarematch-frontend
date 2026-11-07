@@ -25,19 +25,6 @@ export const PROFILE_DEFAULTS = {
 
 export const WEIGHT_KEYS = ['vacancy', 'cost', 'travel'];
 export const WEIGHT_LABELS = { vacancy: 'Vacancy fit', cost: 'Cost fit', travel: 'Travel fit' };
-export const RANK_WEIGHTS = [3, 2, 1];
-
-// Most important first. Ties keep default order.
-export function priorityOrder(weights) {
-  return [...WEIGHT_KEYS].sort(
-    (a, b) => (Number(weights?.[b]) || 0) - (Number(weights?.[a]) || 0) || WEIGHT_KEYS.indexOf(a) - WEIGHT_KEYS.indexOf(b)
-  );
-}
-
-export function weightsFromOrder(order) {
-  return Object.fromEntries(WEIGHT_KEYS.map((key) => [key, RANK_WEIGHTS[order.indexOf(key)]]));
-}
-
 // Restore integer ratings. Legacy browser drafts used distinct percentages;
 // convert those priorities to 3/2/1 while retaining current ratings and ties.
 export function normalizeWeights(weights) {
@@ -46,36 +33,13 @@ export function normalizeWeights(weights) {
     values.every((value) => [15, 35, 50].includes(value)) &&
     new Set(values).size === 3;
   if (legacyRanks) {
-    const order = priorityOrder(weights);
+    const order = [...WEIGHT_KEYS].sort((a, b) => Number(weights[b]) - Number(weights[a]) || WEIGHT_KEYS.indexOf(a) - WEIGHT_KEYS.indexOf(b));
     return Object.fromEntries(WEIGHT_KEYS.map((key) => [key, 3 - order.indexOf(key)]));
   }
   return Object.fromEntries(WEIGHT_KEYS.map((key) => {
     const value = Number(weights?.[key]);
     return [key, Number.isFinite(value) ? Math.min(5, Math.max(1, Math.round(value))) : 3];
   }));
-}
-
-// Give `key` the chosen rank (0-based); factor that held that rank takes its old one.
-export function setRank(weights, key, rank) {
-  const order = priorityOrder(weights);
-  const from = order.indexOf(key);
-  [order[from], order[rank]] = [order[rank], order[from]];
-  return weightsFromOrder(order);
-}
-
-// Recover weights ranking from 2-factor cost share.
-export function weightsFromCostShare(share) {
-  const target = Number.isFinite(share) ? share : 0.7;
-  const [a, b, c] = WEIGHT_KEYS;
-  const orders = [[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]];
-  let best = weightsFromOrder(orders[0]);
-  let bestDiff = Infinity;
-  orders.forEach((order) => {
-    const w = weightsFromOrder(order);
-    const diff = Math.abs(w.cost / (w.cost + w.travel) - target);
-    if (diff < bestDiff - 1e-9) { best = w; bestDiff = diff; }
-  });
-  return best;
 }
 
 /**

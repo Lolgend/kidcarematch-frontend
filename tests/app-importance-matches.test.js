@@ -212,11 +212,15 @@ describe('importance ratings and backend matching flow', () => {
     }));
     await signIn({ waitForOverview: false });
     expect(requests.some((request) => request.path === '/api/v1/profile' && request.method === 'GET')).toBe(true);
+    expect(screen.getByRole('heading', { name: 'Complete your family profile' })).toBeTruthy();
     const vacancy = await screen.findByRole('slider', { name: 'Vacancy fit' });
     const cost = screen.getByRole('slider', { name: 'Cost fit' });
     const travel = screen.getByRole('slider', { name: 'Travel fit' });
     expect([vacancy.value, cost.value, travel.value]).toEqual(['3', '2', '1']);
     expect(screen.getByRole('button', { name: /save profile/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'How match scores work' }));
+    expect(screen.getByRole('dialog').textContent).toContain('Displayed commute modes and estimates are separate');
+    fireEvent.click(screen.getByRole('button', { name: 'Got it' }));
     fireEvent.change(vacancy, { target: { value: '2' } });
     fireEvent.change(cost, { target: { value: '2' } });
     fireEvent.change(travel, { target: { value: '2' } });

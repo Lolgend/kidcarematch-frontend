@@ -1,19 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   PROFILE_DEFAULTS,
-  RANK_WEIGHTS,
   WEIGHT_KEYS,
   WEIGHT_LABELS,
   fromApiProfile,
   isProfileComplete,
   nextMonthValue,
   normalizeWeights,
-  priorityOrder,
-  setRank,
   toApiProfile,
   validateFamilyProfile,
-  weightsFromCostShare,
-  weightsFromOrder,
 } from "../../src/profile/familyProfile.js";
 
 describe("familyProfile module", () => {
@@ -288,6 +283,8 @@ describe("familyProfile module", () => {
       };
       const reconstructed = fromApiProfile(legacyApi);
       expect(reconstructed.weights).toEqual({ vacancy: 3, cost: 3, travel: 5 });
+      expect(fromApiProfile({ ...apiProfile, vacancy_weight: 0.35, cost_weight: 0.5, travel_weight: 0.15 }).weights)
+        .toEqual({ vacancy: 1, cost: 1, travel: 1 });
     });
 
     it("converts legacy ranked browser drafts to ratings 3/2/1", () => {
@@ -310,49 +307,19 @@ describe("familyProfile module", () => {
     });
   });
 
-  describe("shared ranking and default helpers", () => {
-    it("exports standard weight keys, labels, and rank weights", () => {
+  describe("importance defaults and helpers", () => {
+    it("exports standard rating keys and labels", () => {
       expect(WEIGHT_KEYS).toEqual(["vacancy", "cost", "travel"]);
       expect(WEIGHT_LABELS).toEqual({
         vacancy: "Vacancy fit",
         cost: "Cost fit",
         travel: "Travel fit",
       });
-      expect(RANK_WEIGHTS).toEqual([3, 2, 1]);
-    });
-
-    it("determines priority order with ties resolving by default key order", () => {
-      expect(priorityOrder({ vacancy: 3, cost: 2, travel: 1 })).toEqual([
-        "vacancy",
-        "cost",
-        "travel",
-      ]);
-      expect(priorityOrder({ vacancy: 3, cost: 3, travel: 3 })).toEqual([
-        "vacancy",
-        "cost",
-        "travel",
-      ]);
-      expect(priorityOrder({ vacancy: 1, cost: 5, travel: 2 })).toEqual([
-        "cost",
-        "travel",
-        "vacancy",
-      ]);
     });
 
     it("keeps ties independent and clamps restored ratings to the slider range", () => {
       expect(normalizeWeights({ vacancy: 3, cost: 3, travel: 3 })).toEqual({ vacancy: 3, cost: 3, travel: 3 });
       expect(normalizeWeights({ vacancy: 0, cost: 8, travel: 3 })).toEqual({ vacancy: 1, cost: 5, travel: 3 });
-    });
-
-    it("swaps ranks using setRank", () => {
-      const base = { vacancy: 3, cost: 2, travel: 1 };
-      // Move 'travel' (currently rank 2) to rank 0
-      const updated = setRank(base, "travel", 0);
-      expect(updated).toEqual({
-        travel: 3,
-        cost: 2,
-        vacancy: 1,
-      });
     });
 
     it("computes nextMonthValue in YYYY-MM format", () => {

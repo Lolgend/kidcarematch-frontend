@@ -3159,7 +3159,7 @@ export function App() {
         </footer>
       </main>
 
-      {scoreInfoOpen && !isOnboardingGated && (
+      {scoreInfoOpen && (
         <div className="modal-backdrop" onClick={() => setScoreInfoOpen(false)}>
           <section
             className="info-modal"
@@ -3185,7 +3185,7 @@ export function App() {
             </div>
             <div className="info-item">
               <h3>3. Travel Fit</h3>
-              <p>Measures how convenient a childcare centre is based on your home location, workplace location and preferred transport mode. Centres with shorter estimated commute times and less additional travel receive higher scores.</p>
+              <p>The matching service calculates Travel fit from your saved family profile. Displayed commute modes and estimates are separate; changing them does not change the matching score.</p>
             </div>
             <div className="info-item overall">
               <h3>Overall Match Score</h3>
