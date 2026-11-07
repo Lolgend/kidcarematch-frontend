@@ -23,6 +23,7 @@ import AdminDashboard from './admin/AdminDashboard';
 import CentreCommute from './commute/CentreCommute';
 import MatchesCommute, { MatchCommuteSummary } from './commute/MatchesCommute.jsx';
 import ComparisonCommuteTable from './commute/ComparisonCommuteTable.jsx';
+import CompareIdentityStatus from './CompareIdentityStatus.jsx';
 import { getProfileCommuteContextKey } from './commute/commuteSession.js';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
@@ -541,6 +542,8 @@ function App() {
     setCompareSelectedIdsState(nextIds);
   };
   const [compareStep, setCompareStep] = useState('selection');
+  const [compareSelectionScrollY, setCompareSelectionScrollY] = useState(0);
+  const pendingComparisonScrollRef = useRef(null);
   const [compareQuery, setCompareQuery] = useState('');
   const [compareDistricts, setCompareDistricts] = useState([]);
   const [compareWatchlistOnly, setCompareWatchlistOnly] = useState(false);
@@ -605,6 +608,10 @@ function App() {
     if (selectedCentre || centresLoading) return;
     const origin = pendingCentreOriginRestoreRef.current;
     if (!origin) return;
+    if (normalizeCentreComparisonContext(origin)) {
+      pendingCentreOriginRestoreRef.current = null;
+      return;
+    }
     if (origin.page === 'Find my matches' && matchStatus === 'loading') return;
     const control = origin.focusCentreId
       ? document.querySelector(`[data-centre-id="${CSS.escape(String(origin.focusCentreId))}"]`)
@@ -667,6 +674,8 @@ function App() {
     if (comparisonContext) {
       setCompareSelectedIds(comparisonContext.compareSelectedIds);
       setCompareStep(comparisonContext.compareStep);
+      setCompareSelectionScrollY(comparisonContext.compareSelectionScrollY);
+      pendingComparisonScrollRef.current = { step: comparisonContext.compareStep, scrollY: comparisonContext.compareScrollY };
       setCompareQuery(restoreCentreReturnQuery({ query: comparisonContext.compareQuery }, profile));
       setCompareDistricts(comparisonContext.compareDistricts);
       setCompareWatchlistOnly(comparisonContext.compareWatchlistOnly);
@@ -713,26 +722,42 @@ function App() {
     centreReturnRestoredRef.current = true;
     const comparisonContext = normalizeCentreComparisonContext(context);
     const scrollY = comparisonContext?.compareScrollY ?? (Number(context.scrollY) || 0);
-    window.requestAnimationFrame(() => window.scrollTo(0, Math.max(0, scrollY)));
+    if (comparisonContext) {
+      pendingComparisonScrollRef.current = { step: comparisonContext.compareStep, scrollY };
+    } else {
+      window.requestAnimationFrame(() => window.scrollTo(0, Math.max(0, scrollY)));
+    }
   }, [authResolved, currentUser?.uid, onboardingState.status, profile, returnContextReady]);
 
   useEffect(() => {
     if (!authResolved || !returnContextReady || page !== 'Compare centres' || selectedCentre ||
         centreIdFromPath(window.location.pathname) ||
         !permittedCentreOriginPage({ page }, currentUser, onboardingState, profile)) return undefined;
-    persistComparisonSnapshot(compareStep, window.scrollY);
+    const pendingScroll = pendingComparisonScrollRef.current;
+    const restorationPending = pendingScroll?.step === compareStep;
+    persistComparisonSnapshot(compareStep, restorationPending ? pendingScroll.scrollY : window.scrollY);
     let timer = null;
     const onScroll = () => {
+      if (pendingComparisonScrollRef.current?.step === compareStep) return;
+      if (compareStep === 'selection') setCompareSelectionScrollY(window.scrollY);
       if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(() => persistComparisonSnapshot(compareStep, window.scrollY), 120);
     };
+    const onPageHide = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      if (activeAccountIdRef.current !== (currentUser?.uid || null)) return;
+      const pending = pendingComparisonScrollRef.current;
+      persistComparisonSnapshot(compareStep, pending?.step === compareStep ? pending.scrollY : window.scrollY);
+    };
     window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('pagehide', onPageHide);
     return () => {
       window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('pagehide', onPageHide);
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [authResolved, returnContextReady, page, selectedCentre, currentUser?.uid, onboardingState.status,
-    profile, compareStep, compareQuery, compareDistricts, compareWatchlistOnly, compareSelectedIds]);
+    profile, compareStep, compareQuery, compareDistricts, compareWatchlistOnly, compareSelectedIds, compareSelectionScrollY]);
 
   const controller = useMemo(() => {
     return createOnboardingController({
@@ -887,6 +912,8 @@ function App() {
         setSaved([]);
         setCompareSelectedIds([]);
         setCompareStep('selection');
+        setCompareSelectionScrollY(0);
+        pendingComparisonScrollRef.current = null;
         setCompareQuery('');
         setCompareDistricts([]);
         setCompareWatchlistOnly(false);
@@ -1070,13 +1097,14 @@ function App() {
   };
 
   const pushHistoryEntry = (state, path) => {
+    window.history.scrollRestoration = 'manual';
     const index = ensureHistoryEntryIndex() + 1;
     window.history.pushState({ ...state, centreHistoryIndex: index }, '', path);
     historyEntryIndexRef.current = index;
     return index;
   };
 
-  const comparisonReturnSnapshot = (step = compareStep, scrollY = window.scrollY) => ({
+  const comparisonReturnSnapshot = (step = compareStep, scrollY = window.scrollY, selectionScrollY = compareSelectionScrollY) => ({
     version: 1,
     uid: currentUser?.uid || null,
     returnPath: window.location.pathname,
@@ -1087,6 +1115,7 @@ function App() {
     compareWatchlistOnly,
     compareSelectedIds: [...compareSelectedIds],
     compareScrollY: Math.max(0, Number(scrollY) || 0),
+    compareSelectionScrollY: Math.max(0, Number(step === 'selection' ? scrollY : selectionScrollY) || 0),
   });
 
   const persistComparisonSnapshot = (step = compareStep, scrollY = window.scrollY) => {
@@ -1101,13 +1130,17 @@ function App() {
   };
 
   const transitionComparisonStep = (nextStep) => {
-    persistComparisonSnapshot(compareStep, window.scrollY);
-    const snapshot = comparisonReturnSnapshot(nextStep, 0);
+    const currentScrollY = window.scrollY;
+    const selectionScrollY = compareStep === 'selection' ? currentScrollY : compareSelectionScrollY;
+    persistComparisonSnapshot(compareStep, currentScrollY);
+    const targetScrollY = nextStep === 'selection' ? selectionScrollY : 0;
+    const snapshot = comparisonReturnSnapshot(nextStep, targetScrollY, selectionScrollY);
     const id = saveCentreReturnContext(snapshot);
     if (id) pushHistoryEntry({ centreComparisonContextId: id }, window.location.pathname);
     compareSelectionGenerationRef.current += 1;
+    setCompareSelectionScrollY(selectionScrollY);
     setCompareStep(nextStep);
-    window.scrollTo(0, 0);
+    pendingComparisonScrollRef.current = { step: nextStep, scrollY: targetScrollY };
   };
 
   // Centres hearted before the backend watchlist existed (or while it was unreachable) only
@@ -1202,6 +1235,7 @@ function App() {
           compareDistricts: page === 'Compare centres' ? compareDistricts : undefined,
           compareWatchlistOnly: page === 'Compare centres' ? compareWatchlistOnly : undefined,
           compareScrollY: page === 'Compare centres' ? window.scrollY : undefined,
+          compareSelectionScrollY: page === 'Compare centres' ? compareSelectionScrollY : undefined,
           matchSnapshot: page === 'Find my matches' ? ranked.map(({ id, score, fee, vf, cf, tf, vacancyLabel, locationLabel }) => ({ id: String(id), score, fee, vf, cf, tf, vacancyLabel, locationLabel })) : null,
           matchControls: page === 'Find my matches' ? { budget: Number(budget), weights: { ...weights } } : null,
           scrollY: window.scrollY,
@@ -2034,6 +2068,40 @@ function App() {
 
     return map;
   }, [centres, watchlistEntries, fetchedCentres]);
+
+  useEffect(() => {
+    const pending = pendingComparisonScrollRef.current;
+    if (!pending || page !== 'Compare centres' || compareStep !== pending.step) return undefined;
+    if (compareStep === 'selection') {
+      if (compareDirectoryStatus === 'loading' || compareDirectoryStatus === 'idle') return undefined;
+      const identitiesReady = compareSelectedIds.every((id) => centreLookup.has(String(id)) || compareIdentityStatus[String(id)] === 'error');
+      if (!identitiesReady) return undefined;
+    }
+    let frame = 0;
+    const expectedOptionCount = compareWatchlistOnly
+      ? compareDirectoryCentres.filter((centre) => saved.map(String).includes(String(centre.id))).length
+      : compareDirectoryCentres.length;
+    const restoreWhenReady = () => {
+      if (pendingComparisonScrollRef.current !== pending) return;
+      const renderedOptions = document.querySelectorAll('.compare-picker .compare-option').length;
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const rowsNeedLayout = compareStep === 'selection' && expectedOptionCount > 0 &&
+        (renderedOptions < expectedOptionCount || maxScroll < pending.scrollY);
+      if (rowsNeedLayout) {
+        frame = window.requestAnimationFrame(restoreWhenReady);
+        return;
+      }
+      window.scrollTo(0, Math.min(Math.max(0, pending.scrollY), maxScroll));
+      pendingComparisonScrollRef.current = null;
+    };
+    frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(restoreWhenReady);
+    });
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [page, compareStep, compareDirectoryStatus, compareSelectedIds, compareIdentityStatus, centreLookup,
+    compareDirectoryCentres, saved, compareWatchlistOnly]);
 
   // Make sure every saved centre can be shown, even if it isn't on the current page/search.
   useEffect(() => {
@@ -3060,13 +3128,8 @@ function App() {
                       <div><strong>{compareSelectedIds.length} of 3 selected</strong><span>{compareCentres.map((centre) => centre.name).join(' · ') || 'Choose at least two centres.'}</span></div>
                       <button className="primary-btn" disabled={compareSelectedIds.length < 2 || compareSelectedIds.length > 3} onClick={() => transitionComparisonStep('comparison')}>Compare</button>
                     </div>
-                    {compareSelectedIds.filter((id) => !centreLookup.has(String(id))).map((id) => (
-                      <p className="fine-print" role={compareIdentityStatus[String(id)] === 'error' ? 'alert' : 'status'} key={`identity-${id}`}>
-                        Centre {id}: {compareIdentityStatus[String(id)] === 'error'
-                          ? <><span>identity could not be loaded.</span>{' '}<button className="text-btn" onClick={() => setCompareIdentityReload((value) => value + 1)}>Retry</button></>
-                          : 'loading centre identity…'}
-                      </p>
-                    ))}
+                    <CompareIdentityStatus selectedIds={compareSelectedIds} centreLookup={centreLookup}
+                      statusById={compareIdentityStatus} onRetry={() => setCompareIdentityReload((value) => value + 1)} />
 
                     {compareDirectoryStatus === 'loading' && <p role="status" className="compare-picker-state">Loading centres…</p>}
                     {compareDirectoryStatus === 'error' && <div className="compare-picker-state" role="alert"><p>Could not load centres: {compareDirectoryError}</p><button className="secondary-btn" onClick={() => setCompareDirectoryReload((value) => value + 1)}>Try again</button></div>}
@@ -3090,21 +3153,16 @@ function App() {
                 <>
                   <PageTitle title="Compare centres" subtitle="Review the centres you selected side by side." />
                   <button className="secondary-btn compare-edit" onClick={() => transitionComparisonStep('selection')}>Edit selection</button>
-                  {compareSelectedIds.filter((id) => !centreLookup.has(String(id))).map((id) => (
-                    <p className="fine-print" role={compareIdentityStatus[String(id)] === 'error' ? 'alert' : 'status'} key={id}>
-                      Centre {id}: {compareIdentityStatus[String(id)] === 'error'
-                        ? <><span>identity could not be loaded.</span>{' '}<button className="text-btn" onClick={() => setCompareIdentityReload((value) => value + 1)}>Retry</button></>
-                        : 'loading centre identity…'}
-                    </p>
-                  ))}
+                  <CompareIdentityStatus selectedIds={compareSelectedIds} centreLookup={centreLookup}
+                    statusById={compareIdentityStatus} onRetry={() => setCompareIdentityReload((value) => value + 1)} />
                 </>
               )}
 
               {compareStep === 'comparison' && <section>
                 <div className="results-top">
                   <div>
-                    <h2>2. Compare side by side</h2>
-                    <p>Select at least 2 centres above to compare their details.</p>
+                    <h2>Selected centre details</h2>
+                    <p>Travel estimates and published information for your selected centres.</p>
                   </div>
                 </div>
 

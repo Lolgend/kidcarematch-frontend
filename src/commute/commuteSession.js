@@ -775,6 +775,10 @@ export function createCommuteSession({
       for (const [id, response] of Object.entries(currentResponses)) {
         setData[id] = retainedSetData[id] ? retainSameConditionRoutes(retainedSetData[id], response) : response;
       }
+      const activeSetEvaluations = centreIds.map((id) => ({ id, response: setData[id] }));
+      comparisonSetComplete = centreIds.every((id) => Boolean(setData[id]));
+      comparisonCompatible = comparisonSetComplete && (centreIds.length < 2 ||
+        hasCompatibleSetConditions(activeSetEvaluations, centreIds.length));
       data = setData[String(centreId)] || null;
       loading = false;
       const failed = evaluations.find(({ error: err }) => err);

@@ -1256,6 +1256,50 @@ describe("createCommuteSession controller", () => {
     expect(session.getState().data.samples[0].direct_route.status).toBe("available");
   });
 
+  it("does not certify an incomplete selected-sample cohort while retaining usable centre facts", async () => {
+    loadCommute = vi.fn(async (id) => {
+      if (String(id) === "202") throw new Error("503: centre route unavailable");
+      return selectedCycleResponse(101, 0);
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      comparisonCentreIds: [101, 202],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(session.getState().setData["101"]).not.toBeUndefined();
+    expect(session.getState().comparisonSetComplete).toBe(false);
+    expect(session.getState().comparisonCompatible).toBe(false);
+  });
+
+  it("keeps a complete same-condition retained cohort comparable when one refresh fails", async () => {
+    let refresh = false;
+    loadCommute = vi.fn(async (id, request) => {
+      if (refresh && String(id) === "202") throw new Error("503: temporary refresh failure");
+      return selectedCycleResponse(id, request.sampling.sample_index);
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      comparisonCentreIds: [101, 202],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(session.getState().comparisonSetComplete).toBe(true);
+    refresh = true;
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(Object.keys(session.getState().setData).sort()).toEqual(["101", "202"]);
+    expect(session.getState().comparisonSetComplete).toBe(true);
+    expect(session.getState().comparisonCompatible).toBe(true);
+  });
+
   it("rejects selected-set results with different provider options", async () => {
     const selectedResponse = (id, options) => {
       const response = selectedCycleResponse(id, 0);

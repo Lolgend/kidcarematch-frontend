@@ -175,7 +175,7 @@ export function summarizeCommute({ data, profileId, mode = "drive", directBaseli
     data, sample, mode, profileId, legs, expectedLegs, hasCompleteTotals, hasConfiguredWorkplace,
     hasNegotiatedBaseline: baselineReady,
   });
-  const comparisonAvailable = individuallyCertified && comparisonCompatible;
+  const comparisonAvailable = individuallyCertified && comparisonCompatible && comparisonSetComplete;
   const signedDeviationSeconds = comparisonAvailable
     ? sample.totals.duration_seconds - directRoute.totals.duration_seconds
     : null;
