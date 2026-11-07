@@ -102,6 +102,38 @@
 .detail-modal>h1{margin-top:0}
 @media(max-width:600px){.detail-modal{padding:26px 18px 22px}}
 
+/* Full centre destination: the page inherits KidCareMatch's quiet green surfaces. */
+.app-shell.centre-page-active{display:block;min-height:100vh;background:#f6f8f4}
+.app-shell.centre-page-active>:not(.centre-details-page):not(.auth-overlay){display:none!important}
+.centre-details-page{min-height:100vh;padding:24px clamp(18px,4vw,56px) 64px;color:#25372d}
+.centre-details-inner{width:min(1280px,100%);margin:0 auto}
+.centre-details-return{display:inline-flex;align-items:center;gap:8px;margin:0 0 22px;color:#477b51;font-size:13px;font-weight:700;text-decoration:none}
+.centre-details-return:hover{text-decoration:underline}
+.centre-details-heading{margin-bottom:28px}
+.centre-details-heading h1{margin:0 0 7px;font-size:clamp(28px,3vw,40px);line-height:1.15;letter-spacing:-.04em;color:#24372c}
+.centre-details-heading h1:focus{outline:none}
+.centre-details-heading p{margin:0;color:#65756a;font-size:14px;line-height:1.6}
+.centre-details-rating{display:flex;align-items:center;gap:7px;margin-top:12px;color:#c18c32;font-size:14px}
+.centre-details-rating strong{color:#34483a}.centre-details-rating span{color:#7b887e;font-size:12px}
+.centre-details-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(260px,1fr);gap:24px;align-items:start}
+.centre-details-primary,.centre-details-facts,.parent-reviews{min-width:0;background:#fff;border:1px solid #e6ece3;border-radius:16px;box-shadow:0 8px 28px #29432d0a}
+.centre-details-primary{padding:16px}
+.centre-details-primary .centre-map-wrapper{height:auto;aspect-ratio:16/9;min-height:320px;max-height:527px;border-radius:12px;overflow:hidden}
+.centre-details-primary .centre-map-section>.centre-map-unavailable,.centre-details-primary .centre-map-section>.centre-map-loading{display:grid;place-items:center;aspect-ratio:16/9;min-height:280px;max-height:527px;border-radius:12px}
+.centre-details-facts{padding:22px 24px}
+.centre-details-facts h2{margin:0 0 14px;font-size:17px;color:#2f4435}
+.centre-details-facts p{display:grid;gap:5px;margin:0;padding:12px 0;border-bottom:1px solid #eef1eb;font-size:13px;line-height:1.45;color:#56685b;overflow-wrap:anywhere}
+.centre-details-facts p:last-child{border-bottom:0}
+.centre-details-facts p b{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#8a968c}
+.centre-details-facts a{display:flex;align-items:center;gap:4px;color:#477b51;text-decoration:none;font-weight:650}
+.centre-details-facts a:hover{text-decoration:underline}
+.skip-centre-map{display:inline-block;margin:0 0 12px;color:#477b51;font-size:12px;font-weight:700}
+.centre-details-page .parent-reviews{margin-top:24px;padding:24px}
+.centre-details-loading,.centre-details-error{padding:38px;background:#fff;border:1px solid #e6ece3;border-radius:16px;color:#65756a}
+.centre-details-error h1{margin:0 0 8px;color:#2f4435}
+@media(max-width:767px){.centre-details-grid{grid-template-columns:1fr}.centre-details-facts{order:2}}
+@media(max-width:700px){.centre-details-page{padding:18px 16px 40px}.centre-details-return{margin-bottom:18px}.centre-details-heading{margin-bottom:20px}.centre-details-primary{padding:10px}.centre-details-primary .centre-map-wrapper{min-height:280px;aspect-ratio:auto}.centre-details-primary .centre-map-section>.centre-map-unavailable,.centre-details-primary .centre-map-section>.centre-map-loading{min-height:280px;aspect-ratio:auto}.centre-details-page .parent-reviews{padding:17px}.centre-details-facts{padding:19px}}
+
 
 /* Login / sign-up card: larger app name */
 .auth-card .auth-mark {
@@ -254,6 +286,24 @@
 }
 
 /* Centre location map & commute */
+.commute-deviation{margin:18px 0 12px;padding:16px 0;border-top:1px solid #d9e1dc;border-bottom:1px solid #d9e1dc;color:#173b2a}
+.commute-deviation>strong{display:block;font-size:clamp(1.25rem,2.4vw,1.8rem);line-height:1.2;font-weight:750;letter-spacing:-.025em}
+.commute-deviation p{margin:8px 0 2px;color:#263c31;font-weight:650;font-variant-numeric:tabular-nums}
+.commute-deviation small{color:#52665a}
+.commute-route-legend{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin:12px 0;color:#233b2d;font-size:14px}
+.commute-route-legend button{display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:4px 6px;border:0;border-radius:5px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.commute-route-legend button:hover{background:#edf3ee}
+.commute-route-legend button:focus-visible{outline:3px solid #136c45;outline-offset:2px}
+.commute-route-key{display:inline-block;width:28px;height:0;border-top:4px solid #2563eb}
+.commute-route-key.direct{border-top:3px dashed #59636e}
+.commute-route-key.centre-workplace{border-color:#07805f}
+.commute-direct-summary{display:flex;justify-content:space-between;gap:16px;padding:0 0 14px;border-bottom:1px solid #d9e1dc;color:#263c31}
+.commute-direct-summary span{font-variant-numeric:tabular-nums}
+.commute-direction-arrow{display:grid;place-items:center;background:transparent;color:#263b4a}
+.commute-direction-arrow svg{width:20px;height:20px;overflow:visible}
+.commute-legend-indicator.indicator-solid-green,.commute-leg-indicator.indicator-solid-green{background:#07805f}
+@media(max-width:700px){.centre-details-primary .centre-map-wrapper{height:280px;min-height:280px;aspect-ratio:auto}.commute-route-legend{gap:4px 10px}.commute-route-legend button{min-height:42px}.commute-direct-summary{align-items:flex-start;flex-direction:column;gap:4px}}
+
 .centre-map-section {
   margin: 16px 0 20px;
 }
@@ -363,6 +413,13 @@
   background: #2563eb;
   border-color: #1d4ed8;
   color: #fff;
+}
+
+.commute-estimate-note {
+  margin: 0 0 10px;
+  color: #4b584e;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .commute-unresolvable-warning {

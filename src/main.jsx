@@ -23,6 +23,8 @@ import AdminDashboard from './admin/AdminDashboard';
 import CentreCommute from './commute/CentreCommute';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
+import { centreDetailsPath, centreIdFromPath } from './centreDetailsRoute';
+import { claimCentreReturnTab, clearCentreReturnContext, hasCentreReturnAccount, loadCentreReturnContext, protectCentreReturnQuery, restoreCentreReturnQuery, saveCentreReturnContext } from './centreReturnContext';
 import {
   getCentres,
   getCentreById,
@@ -368,6 +370,46 @@ function markLocalAlertsRead(uid, id = null) {
   saveAlertStore(uid, store);
 }
 
+const CENTRE_ORIGIN_PAGES = new Set([
+  'Overview', 'Preschool directory', 'Find my matches', 'My watchlist', 'Compare centres', 'Family profile',
+]);
+
+function permittedCentreOriginPage(context, currentUser, onboardingState, profile) {
+  if (!CENTRE_ORIGIN_PAGES.has(context?.page)) return null;
+  if (context.page === 'Overview') return 'Overview';
+  if (!currentUser) return null;
+  const ready = ['ready', 'admin'].includes(onboardingState.status) ||
+    currentUser.email?.toLowerCase() === 'swetalakshita@gmail.com';
+  if (!ready) return null;
+  if (context.page === 'Find my matches' && !profile) return null;
+  return context.page;
+}
+
+function focusCentreOriginControl(origin) {
+  let attempts = 0;
+  const focus = () => {
+    const control = origin.focusCentreId
+      ? document.querySelector(`[data-centre-id="${CSS.escape(String(origin.focusCentreId))}"]`)
+      : null;
+    if (control && !control.disabled) {
+      control.focus();
+      if (document.activeElement === control) return;
+    }
+    if (attempts++ < 20) window.setTimeout(focus, 50);
+  };
+  focus();
+}
+
+function matchControlsFromOrigin(origin) {
+  const budget = Number(origin?.matchControls?.budget);
+  const weights = origin?.matchControls?.weights;
+  const validWeights = weights && ['vacancy', 'cost', 'travel'].every((key) => [15, 35, 50].includes(Number(weights[key]))) &&
+    Number(weights.vacancy) + Number(weights.cost) + Number(weights.travel) === 100 &&
+    new Set(['vacancy', 'cost', 'travel'].map((key) => Number(weights[key]))).size === 3;
+  if (!Number.isFinite(budget) || budget < 1 || budget > 1000000 || !validWeights) return null;
+  return { budget, weights: { vacancy: Number(weights.vacancy), cost: Number(weights.cost), travel: Number(weights.travel) } };
+}
+
 // Dropdown list of vacancy alerts for watchlisted centres.
 function NotificationPanel({ items, unread, error, onOpen, onReadAll }) {
   return (
@@ -440,32 +482,58 @@ function App() {
   const [centres, setCentres] = useState([]);
   const [centresLoading, setCentresLoading] = useState(true);
   const [centresError, setCentresError] = useState('');
+  const [guestPreviewIds, setGuestPreviewIds] = useState([]);
+  const [guestPreviewStatus, setGuestPreviewStatus] = useState('loading');
   const [centreSummary, setCentreSummary] = useState(null);
+  const [selectedCentre, setSelectedCentre] = useState(null);
+
   const [watchlistEntries, setWatchlistEntries] = useState([]);
   // Saved centres that aren't in the currently loaded list are fetched by id and cached here.
   const [fetchedCentres, setFetchedCentres] = useState({});
   const requestedIds = useRef(new Set());
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const detailRequestRef = useRef(0);
+  const activeAccountIdRef = useRef(null);
+  const invalidateCentreDetailRequests = () => {
+    detailRequestRef.current += 1;
+    setDetailLoading(false);
+    setMyReviewLoading(false);
+    setReviewSaving(false);
+    setMyCentreReview(null);
+    setMyReviewError('');
+    setMyReviewKnown(false);
+    myReviewBaselineRef.current = null;
+    setReviewRating(5);
+    setReviewComment('');
+  };
+  const reviewsSectionRef = useRef(null);
   const [detailReviews, setDetailReviews] = useState([]);
+  const [detailReviewsLoading, setDetailReviewsLoading] = useState(false);
+  const [detailReviewsError, setDetailReviewsError] = useState('');
   const [myCentreReview, setMyCentreReview] = useState(null);
+  const [myReviewLoading, setMyReviewLoading] = useState(false);
+  const [myReviewError, setMyReviewError] = useState('');
+  const [myReviewKnown, setMyReviewKnown] = useState(false);
+  const myReviewBaselineRef = useRef(null);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState('');
   const [reviewSaving, setReviewSaving] = useState(false);
   const [pageOffset, setPageOffset] = useState(0);
   const [totalCentres, setTotalCentres] = useState(0);
   const [currentUser, setCurrentUser] = useState(null);
+  const [authResolved, setAuthResolved] = useState(false);
   const [page, setPage] = useState('Overview');
+  const centreReturnRestoredRef = useRef(false);
+  const centreReturnOriginRef = useRef(null);
+  const pendingCentreOriginRestoreRef = useRef(null);
+  const activeIdentityRef = useRef(undefined);
+  const [returnContextReady, setReturnContextReady] = useState(false);
 
   // Hooks must live inside the component (this was at module level before).
   const [compareSelectedIds, setCompareSelectedIds] = useState([]);
 
-  const [saved, setSaved] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('kidcare-watchlist') || '[]');
-    } catch {
-      return [];
-    }
-  });
+  const [saved, setSaved] = useState([]);
 
   const [query, setQuery] = useState('');
   const [notifications, setNotifications] = useState({ items: [], unread_count: 0 });
@@ -481,13 +549,45 @@ function App() {
   const [selectedDistricts, setSelectedDistricts] = useState([]); // e.g. ['D01', 'D09']
   // The API can only filter by "has an open vacancy for this level", so that is the filter we offer.
   const [level, setLevel] = useState('');
+
+  useEffect(() => {
+    const claim = claimCentreReturnTab();
+    claim.ready.then((ready) => setReturnContextReady(ready));
+    return () => claim.dispose();
+  }, []);
+
+  useEffect(() => {
+    if (!authResolved || !currentUser) return;
+    if (hasCentreReturnAccount(currentUser.uid)) return;
+    // A sign-out or account switch must not leave another viewer's return state in this tab.
+    centreReturnOriginRef.current = null;
+    clearCentreReturnContext();
+  }, [authResolved, currentUser?.uid]);
+
   const [compareDetails, setCompareDetails] = useState({});
   const [budget, setBudget] = useState(750);
   const [matchForm, setMatchForm] = useState({ level: 'n1', citizenship: 'SC', home: '', work: '' });
   const [matchRun, setMatchRun] = useState(null); // the inputs the current results were fetched for
+  const [restoredMatchSnapshot, setRestoredMatchSnapshot] = useState(null);
+  const matchRestoreGenerationRef = useRef(0);
   const [matchCandidates, setMatchCandidates] = useState([]);
   const [matchStatus, setMatchStatus] = useState('idle'); // idle | loading | done | error
   const [matchMessage, setMatchMessage] = useState('');
+  useEffect(() => {
+    if (selectedCentre || centresLoading) return;
+    const origin = pendingCentreOriginRestoreRef.current;
+    if (!origin) return;
+    if (origin.page === 'Find my matches' && matchStatus === 'loading') return;
+    const control = origin.focusCentreId
+      ? document.querySelector(`[data-centre-id="${CSS.escape(String(origin.focusCentreId))}"]`)
+      : null;
+    if (origin.focusCentreId && !control) return;
+    pendingCentreOriginRestoreRef.current = null;
+    window.setTimeout(() => {
+      window.scrollTo(0, Math.max(0, Number(origin.scrollY) || 0));
+      focusCentreOriginControl(origin);
+    }, 50);
+  }, [centresLoading, matchCandidates, matchStatus, page, selectedCentre]);
   const matchDetailCache = useRef(new Map());
   const [weights, setWeights] = useState({ vacancy: 50, cost: 35, travel: 15 });
   const [scoreInfoOpen, setScoreInfoOpen] = useState(false);
@@ -512,10 +612,33 @@ function App() {
     setMatchForm({ level: p.level, citizenship: p.citizenship, home: p.home, work: p.work || '' });
     setBudget(Number(p.budget));
     setWeights(p.weights);
+    setRestoredMatchSnapshot(null);
     setMatchRun(null);
     setMatchCandidates([]);
     setMatchStatus('idle');
     setMatchMessage('');
+  };
+
+  const restoreMatchingOrigin = (origin) => {
+    const controls = matchControlsFromOrigin(origin);
+    if (controls) {
+      setBudget(controls.budget);
+      setWeights(controls.weights);
+    }
+    setRestoredMatchSnapshot(origin.matchSnapshot);
+    setMatchStatus('loading');
+  };
+
+  const restoreCentreOriginState = (origin, restoredPage) => {
+    setPage(restoredPage);
+    setQuery(restoreCentreReturnQuery(origin, profile));
+    setSelectedDistricts(Array.isArray(origin.districts) ? origin.districts : []);
+    setLevel(origin.level || '');
+    setPageOffset(Number(origin.pageOffset) || 0);
+    setCompareSelectedIds(Array.isArray(origin.compareSelectedIds) ? origin.compareSelectedIds : []);
+    if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
+      restoreMatchingOrigin(origin);
+    }
   };
 
   const [onboardingState, setOnboardingState] = useState(() => ({
@@ -527,6 +650,26 @@ function App() {
     error: null,
     isFirstSave: false,
   }));
+
+  useEffect(() => {
+    if (!authResolved || !returnContextReady || centreReturnRestoredRef.current) return;
+    if (currentUser && onboardingState.status === 'loading') return;
+    const context = loadCentreReturnContext(currentUser?.uid || null, window.history.state?.centreOriginId);
+    if (!context) {
+      centreReturnRestoredRef.current = true;
+      return;
+    }
+    centreReturnOriginRef.current = context;
+    const restoredPage = permittedCentreOriginPage(context, currentUser, onboardingState, profile);
+    if (!restoredPage) {
+      setPage('Overview');
+      centreReturnRestoredRef.current = true;
+      return;
+    }
+    restoreCentreOriginState(context, restoredPage);
+    centreReturnRestoredRef.current = true;
+    window.requestAnimationFrame(() => window.scrollTo(0, Math.max(0, Number(context.scrollY) || 0)));
+  }, [authResolved, currentUser?.uid, onboardingState.status, profile, returnContextReady]);
 
   const controller = useMemo(() => {
     return createOnboardingController({
@@ -594,7 +737,9 @@ function App() {
     }
   }, [onboardingState]);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [selectedCentre, setSelectedCentre] = useState(null);
+  const centreHeadingRef = useRef(null);
+  const cancelledCentreHistoryPopRef = useRef(false);
+  const historyEntryIndexRef = useRef(null);
   const [authMode, setAuthMode] = useState('login');
   const [adminTab, setAdminTab] = useState('Users');
   const [users] = useState([]);
@@ -630,6 +775,28 @@ function App() {
   }, [query, selectedDistricts, level, pageOffset]);
 
   useEffect(() => {
+    let cancelled = false;
+    getCentres({ limit: 6, offset: 0 })
+      .then((data) => {
+        const items = Array.isArray(data) ? data : data?.items;
+        if (!Array.isArray(items)) throw new Error('Unexpected guest preview response.');
+        if (!cancelled) {
+          setGuestPreviewIds(items.slice(0, 6)
+            .filter((centre) => centre?.id != null || centre?.centre_id != null)
+            .map((centre) => String(centre.id ?? centre.centre_id)));
+          setGuestPreviewStatus('ready');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setGuestPreviewIds([]);
+          setGuestPreviewStatus('error');
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     getDistricts()
       .then((list) => setDistricts(Array.isArray(list) ? list : (list?.items ?? list?.data ?? [])))
       .catch((error) => console.warn('Districts unavailable:', error.message));
@@ -648,7 +815,55 @@ function App() {
         user ? user.email : "No user signed in"
       );
 
+      const nextIdentity = user?.uid || null;
+      const previousIdentity = activeIdentityRef.current;
+      if (previousIdentity !== nextIdentity) {
+        activeIdentityRef.current = nextIdentity;
+        setSaved([]);
+        setCompareSelectedIds([]);
+        setMatchRun(null);
+        setMatchCandidates([]);
+        setRestoredMatchSnapshot(null);
+        matchRestoreGenerationRef.current += 1;
+        setMatchStatus('idle');
+        setMatchMessage('');
+        setQuery('');
+        setSelectedDistricts([]);
+        setLevel('');
+        setPageOffset(0);
+        if (previousIdentity !== undefined) {
+          clearCentreReturnContext();
+          centreReturnOriginRef.current = null;
+          setSelectedCentre(null);
+          setWatchlistEntries([]);
+          setPage('Overview');
+          resetSessionMode();
+        }
+        try { localStorage.removeItem('kidcare-watchlist'); } catch { /* storage may be disabled */ }
+      }
+
+      const nextAccountId = user?.uid == null ? null : String(user.uid);
+      const accountChanged = activeAccountIdRef.current !== nextAccountId;
+      activeAccountIdRef.current = nextAccountId;
+      if (accountChanged) {
+        detailRequestRef.current += 1;
+        setDetailLoading(false);
+        setDetailError('');
+        setDetailReviews([]);
+        setDetailReviewsLoading(false);
+        setDetailReviewsError('');
+        setMyCentreReview(null);
+        setMyReviewLoading(false);
+        setMyReviewError('');
+        setMyReviewKnown(false);
+        myReviewBaselineRef.current = null;
+        setReviewRating(5);
+        setReviewComment('');
+        setReviewSaving(false);
+      }
+
       setCurrentUser(user);
+      setAuthResolved(true);
 
       if (!user) {
         controller.cancel();
@@ -770,6 +985,25 @@ function App() {
   };
   refreshNotificationsRef.current = refreshNotifications;
 
+  const ensureHistoryEntryIndex = () => {
+    const currentState = window.history.state || {};
+    if (Number.isSafeInteger(currentState.centreHistoryIndex)) {
+      historyEntryIndexRef.current = currentState.centreHistoryIndex;
+      return currentState.centreHistoryIndex;
+    }
+    const index = Number.isSafeInteger(historyEntryIndexRef.current) ? historyEntryIndexRef.current : 0;
+    window.history.replaceState({ ...currentState, centreHistoryIndex: index }, '', window.location.href);
+    historyEntryIndexRef.current = index;
+    return index;
+  };
+
+  const pushHistoryEntry = (state, path) => {
+    const index = ensureHistoryEntryIndex() + 1;
+    window.history.pushState({ ...state, centreHistoryIndex: index }, '', path);
+    historyEntryIndexRef.current = index;
+    return index;
+  };
+
   // Centres hearted before the backend watchlist existed (or while it was unreachable) only
   // live in this browser, so they never produce vacancy alerts. Subscribe them once.
   useEffect(() => {
@@ -835,35 +1069,233 @@ function App() {
     };
   }, [notifOpen]);
 
-  const openCentreDetails = async (centre) => {
+  const loadCentreDetails = async (centre, { pushHistory = false } = {}) => {
+    if (!centre?.id) return;
+    const requestGeneration = ++detailRequestRef.current;
+    const path = centreDetailsPath(centre.id);
+    if (pushHistory && path && window.location.pathname !== path) {
+      ensureHistoryEntryIndex();
+      const historyOriginId = window.history.state?.centreOriginId;
+      let origin = window.location.pathname.startsWith('/centres/') && historyOriginId
+        ? (loadCentreReturnContext(currentUser?.uid || null, historyOriginId) || centreReturnOriginRef.current)
+        : null;
+      let originId = origin?.id || null;
+      if (!origin && !window.location.pathname.startsWith('/centres/')) {
+        origin = {
+          version: 1,
+          uid: currentUser?.uid || null,
+          returnPath: window.location.pathname,
+          page,
+          query: protectCentreReturnQuery(query, profile),
+          districts: selectedDistricts,
+          level,
+          pageOffset,
+          compareSelectedIds,
+          matchSnapshot: page === 'Find my matches' ? ranked.map(({ id, score, fee, vf, cf, tf, vacancyLabel, locationLabel }) => ({ id: String(id), score, fee, vf, cf, tf, vacancyLabel, locationLabel })) : null,
+          matchControls: page === 'Find my matches' ? { budget: Number(budget), weights: { ...weights } } : null,
+          scrollY: window.scrollY,
+          focusCentreId: String(centre.id),
+        };
+      } else if (origin) {
+        origin = { ...origin, focusCentreId: String(centre.id) };
+      }
+      originId = origin ? (saveCentreReturnContext(origin) || origin.id || null) : null;
+      origin = origin ? { ...origin, id: originId } : null;
+      centreReturnOriginRef.current = origin;
+      const returnPath = origin?.uid === (currentUser?.uid || null)
+        ? origin.returnPath
+        : '/';
+      if (originId && window.location.pathname !== path) {
+        window.history.replaceState({ ...(window.history.state || {}), centreOriginId: originId }, '', window.location.href);
+      }
+      pushHistoryEntry({ ...(window.history.state || {}), centreDetails: true, returnPath, centreOriginId: originId }, path);
+    }
     setSelectedCentre(centre);
     setDetailLoading(true);
+    setDetailError('');
     setDetailReviews([]);
+    setDetailReviewsLoading(true);
+    setDetailReviewsError('');
     setMyCentreReview(null);
+    setMyReviewLoading(Boolean(currentUser));
+    setMyReviewError('');
+    setMyReviewKnown(false);
+    myReviewBaselineRef.current = null;
     setReviewRating(5);
     setReviewComment('');
+    setReviewSaving(false);
+    const requestId = String(centre.id);
+    const loadDetails = getCentreById(centre.id).then((detail) => {
+      if (requestGeneration === detailRequestRef.current) setSelectedCentre((current) => String(current?.id) === requestId ? mapCentre({ ...centre, ...detail }) : current);
+    }).catch((error) => {
+      if (requestGeneration === detailRequestRef.current) setDetailError(error.message?.includes('404') ? 'Centre not found' : 'Centre details could not be loaded. Try again.');
+    }).finally(() => { if (requestGeneration === detailRequestRef.current) setDetailLoading(false); });
+    getCentreReviews(centre.id).then((reviewData) => {
+      if (requestGeneration === detailRequestRef.current) setDetailReviews(reviewData?.items || []);
+    }).catch(() => {
+      if (requestGeneration === detailRequestRef.current) setDetailReviewsError('Published reviews could not be loaded.');
+    }).finally(() => {
+      if (requestGeneration === detailRequestRef.current) setDetailReviewsLoading(false);
+    });
+    const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
+    if (currentUser && centreViewerReady) {
+      loadOwnCentreReview(centre.id, requestGeneration);
+    } else {
+      setMyReviewLoading(false);
+    }
+    return loadDetails;
+  };
+
+  const loadOwnCentreReview = async (centreId, requestGeneration = detailRequestRef.current) => {
+    const accountId = currentUser?.uid == null ? null : String(currentUser.uid);
+    const requestIsCurrent = () => requestGeneration === detailRequestRef.current && accountId === activeAccountIdRef.current;
+    setMyReviewLoading(true);
+    setMyReviewError('');
+    setMyReviewKnown(false);
     try {
-      const reviewMineRequest = currentUser
-        ? getMyReview(centre.id).catch(() => null)
-        : Promise.resolve(null);
-      const [detail, reviewData, mine] = await Promise.all([
-        getCentreById(centre.id),
-        getCentreReviews(centre.id),
-        reviewMineRequest
-      ]);
-      setSelectedCentre(mapCentre({ ...centre, ...detail }));
-      setDetailReviews(reviewData?.items || []);
-      setMyCentreReview(mine);
-      if (mine) {
-        setReviewRating(Number(mine.rating) || 5);
-        setReviewComment(mine.review_description || '');
+      const mine = await getMyReview(centreId);
+      if (!requestIsCurrent()) return;
+      if (!mine || typeof mine !== 'object' || !mine.review_id) {
+        throw new Error('Your review could not be confirmed. Retry before writing a review.');
       }
+      const baseline = {
+        centreId: String(centreId),
+        rating: Number(mine.rating) || 5,
+        comment: mine.review_description || '',
+      };
+      myReviewBaselineRef.current = baseline;
+      setMyCentreReview(mine);
+      setReviewRating(baseline.rating);
+      setReviewComment(baseline.comment);
+      setMyReviewKnown(true);
     } catch (error) {
-      notify(`Could not load full centre details: ${error.message}`);
+      if (!requestIsCurrent()) return;
+      if (error.status === 404 && error.message === '404: Review not found') {
+        myReviewBaselineRef.current = { centreId: String(centreId), rating: 5, comment: '' };
+        setMyCentreReview(null);
+        setReviewRating(5);
+        setReviewComment('');
+        setMyReviewKnown(true);
+      } else {
+        setMyReviewError('Your review could not be loaded. Retry before writing a review.');
+      }
     } finally {
-      setDetailLoading(false);
+      if (requestIsCurrent()) setMyReviewLoading(false);
     }
   };
+
+  const loadCentreInformation = async (centreId) => {
+    const requestGeneration = detailRequestRef.current;
+    const requestId = String(centreId);
+    setDetailLoading(true);
+    setDetailError('');
+    try {
+      const detail = await getCentreById(centreId);
+      if (requestGeneration === detailRequestRef.current) {
+        setSelectedCentre((current) => String(current?.id) === requestId ? mapCentre({ ...current, ...detail }) : current);
+      }
+    } catch (error) {
+      if (requestGeneration === detailRequestRef.current) setDetailError(error.message?.includes('404') ? 'Centre not found' : 'Centre details could not be loaded. Try again.');
+    } finally {
+      if (requestGeneration === detailRequestRef.current) setDetailLoading(false);
+    }
+  };
+
+  const openCentreDetails = (centre) => {
+    if (!confirmReviewDeparture()) return;
+    if (!currentUser && (guestPreviewStatus !== 'ready' || !guestPreviewIds.includes(String(centre?.id)))) {
+      notify(guestPreviewStatus === 'error'
+        ? 'Guest preview access could not be checked. Please try again later.'
+        : 'Please wait while guest preview access is checked.');
+      return;
+    }
+    const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
+    if (currentUser && !centreViewerReady) {
+      notify('Please complete your family profile to access centre details.');
+      return;
+    }
+    loadCentreDetails(mapCentre(centre), { pushHistory: true });
+  };
+
+  const reviewBaseline = myReviewBaselineRef.current;
+  const reviewIsDirty = Boolean(
+    selectedCentre?.id && currentUser && myReviewKnown && !myReviewLoading && !myReviewError &&
+    reviewBaseline?.centreId === String(selectedCentre.id) &&
+    (Number(reviewRating) !== reviewBaseline.rating || reviewComment !== reviewBaseline.comment)
+  );
+  const reviewIsDirtyRef = useRef(false);
+  reviewIsDirtyRef.current = reviewIsDirty;
+  const activeDetailCentreIdRef = useRef(null);
+  activeDetailCentreIdRef.current = selectedCentre?.id ?? null;
+  const confirmReviewDeparture = () => !reviewIsDirty || window.confirm('Discard your unsaved review changes?');
+
+  useEffect(() => {
+    const restoreFromLocation = () => {
+      const centreId = centreIdFromPath(window.location.pathname);
+      if (!authResolved || centresLoading || (!currentUser && guestPreviewStatus === 'loading')) return;
+      if (!centreId) {
+        const origin = returnContextReady
+          ? loadCentreReturnContext(currentUser?.uid || null, window.history.state?.centreOriginId)
+          : null;
+        if (origin) pendingCentreOriginRestoreRef.current = origin;
+        setSelectedCentre(null);
+        if (origin) {
+          centreReturnOriginRef.current = origin;
+          const restoredPage = permittedCentreOriginPage(origin, currentUser, onboardingState, profile);
+          if (!restoredPage) {
+            setPage('Overview');
+            return;
+          }
+          restoreCentreOriginState(origin, restoredPage);
+        }
+        return;
+      }
+      const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
+      if (currentUser && !centreViewerReady) return;
+      const permittedPreview = guestPreviewStatus === 'ready' && guestPreviewIds.includes(centreId);
+      if (!currentUser && !permittedPreview) {
+        setSelectedCentre({ id: centreId, name: 'Sign in to view this centre' });
+        setDetailError('Please sign in to view centre details.');
+        setDetailLoading(false);
+        return;
+      }
+      loadCentreDetails(mapCentre(centres.find((centre) => String(centre.id) === centreId) || { id: centreId }));
+    };
+    const handlePopState = (event) => {
+      const previousIndex = Number.isSafeInteger(historyEntryIndexRef.current)
+        ? historyEntryIndexRef.current
+        : ensureHistoryEntryIndex();
+      const targetIndex = Number.isSafeInteger(event.state?.centreHistoryIndex)
+        ? event.state.centreHistoryIndex
+        : previousIndex - 1;
+      if (cancelledCentreHistoryPopRef.current !== false) {
+        if (targetIndex === cancelledCentreHistoryPopRef.current) {
+          historyEntryIndexRef.current = targetIndex;
+          cancelledCentreHistoryPopRef.current = false;
+          return;
+        }
+        cancelledCentreHistoryPopRef.current = false;
+      }
+      const delta = targetIndex - previousIndex;
+      if (reviewIsDirtyRef.current && activeDetailCentreIdRef.current != null && delta !== 0) {
+        if (!window.confirm('Discard your unsaved review changes?')) {
+          cancelledCentreHistoryPopRef.current = previousIndex;
+          historyEntryIndexRef.current = targetIndex;
+          window.history.go(-delta || 1);
+          return;
+        }
+      }
+      historyEntryIndexRef.current = targetIndex;
+      if (activeDetailCentreIdRef.current != null && delta !== 0) invalidateCentreDetailRequests();
+      restoreFromLocation();
+    };
+    window.addEventListener('popstate', handlePopState);
+    if (window.location.pathname.startsWith('/centres/') && String(selectedCentre?.id) !== centreIdFromPath(window.location.pathname)) {
+      ensureHistoryEntryIndex();
+      restoreFromLocation();
+    }
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [authResolved, centres, centresLoading, currentUser, guestPreviewIds, guestPreviewStatus, onboardingState, profile, returnContextReady, selectedCentre?.id]);
 
   const handleReviewSubmit = async (event) => {
     event.preventDefault();
@@ -872,31 +1304,64 @@ function App() {
       notify('Please sign in before submitting a review.');
       return;
     }
-    if (!selectedCentre?.id || reviewSaving) return;
+    if (!selectedCentre?.id || reviewSaving || !myReviewKnown || myReviewLoading || myReviewError) return;
 
+    const requestGeneration = detailRequestRef.current;
+    const accountId = currentUser?.uid == null ? null : String(currentUser.uid);
+    const centreId = String(selectedCentre.id);
+    const wasEditing = Boolean(myCentreReview?.review_id);
+    const requestIsCurrent = () => requestGeneration === detailRequestRef.current && accountId === activeAccountIdRef.current && String(activeDetailCentreIdRef.current) === centreId;
     setReviewSaving(true);
     const payload = {
       rating: Number(reviewRating),
       review_description: reviewComment.trim() || null
     };
     try {
-      const savedReview = myCentreReview?.review_id
+      const savedReview = wasEditing
         ? await updateReview(myCentreReview.review_id, payload)
         : await submitReview(selectedCentre.id, payload);
+      if (!requestIsCurrent()) return;
       setMyCentreReview(savedReview);
-      const [reviewData, detail] = await Promise.all([
-        getCentreReviews(selectedCentre.id),
-        getCentreById(selectedCentre.id)
+      setMyReviewKnown(true);
+      myReviewBaselineRef.current = {
+        centreId,
+        rating: Number(savedReview.rating) || Number(reviewRating) || 5,
+        comment: savedReview.review_description ?? reviewComment,
+      };
+      setReviewRating(myReviewBaselineRef.current.rating);
+      setReviewComment(myReviewBaselineRef.current.comment);
+      notify(wasEditing ? 'Your review has been updated.' : 'Thank you for sharing your review!');
+      requestAnimationFrame(() => {
+        reviewsSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        reviewsSectionRef.current?.focus({ preventScroll: true });
+      });
+
+      const [reviewResult, centreResult] = await Promise.allSettled([
+        getCentreReviews(centreId),
+        getCentreById(centreId),
       ]);
-      setDetailReviews(reviewData?.items || []);
-      setSelectedCentre(mapCentre({ ...selectedCentre, ...detail }));
-      notify(myCentreReview ? 'Your review has been updated.' : 'Thank you for sharing your review!');
+      if (requestIsCurrent()) {
+        if (reviewResult.status === 'fulfilled') {
+          setDetailReviews(reviewResult.value?.items || []);
+          setDetailReviewsError('');
+        } else {
+          setDetailReviewsError('Published reviews could not be refreshed after saving. Retry reviews.');
+        }
+        if (centreResult.status === 'fulfilled') {
+          setSelectedCentre((current) => String(current?.id) === centreId ? mapCentre({ ...current, ...centreResult.value }) : current);
+          setDetailError('');
+        } else {
+          setDetailError('Centre details could not be refreshed after saving. Try again.');
+        }
+      }
     } catch (error) {
-      notify(error.message?.includes('409')
-        ? 'You have already reviewed this centre. Reopen the details to edit your review.'
-        : `Could not save your review: ${error.message}`);
+      if (requestIsCurrent()) {
+        notify(error.message?.includes('409')
+          ? 'You have already reviewed this centre. Reload your review before editing it.'
+          : `Could not save your review: ${error.message}`);
+      }
     } finally {
-      setReviewSaving(false);
+      if (requestGeneration === detailRequestRef.current && accountId === activeAccountIdRef.current) setReviewSaving(false);
     }
   };
 
@@ -907,13 +1372,28 @@ function App() {
     Boolean(currentUser) && onboardingState.status !== 'ready' && !isAdmin;
 
   useEffect(() => {
+    if (!reviewIsDirty) return undefined;
+    const protectDocumentDeparture = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', protectDocumentDeparture);
+    return () => window.removeEventListener('beforeunload', protectDocumentDeparture);
+  }, [reviewIsDirty]);
+
+  useEffect(() => {
+    if (selectedCentre && !detailLoading && !isOnboardingGated) centreHeadingRef.current?.focus();
+  }, [selectedCentre?.id, detailLoading, isOnboardingGated]);
+
+  useEffect(() => {
     if (isOnboardingGated) {
       setSelectedCentre(null);
       setScoreInfoOpen(false);
     }
   }, [isOnboardingGated]);
 
-  const openPage = (nextPage) => {
+  const openPage = (nextPage, { reviewDepartureConfirmed = false } = {}) => {
+    if (!reviewDepartureConfirmed && !confirmReviewDeparture()) return;
     if (isOnboardingGated) {
       notify('Please complete your family profile to access this feature.');
       setMobileOpen(false);
@@ -937,6 +1417,10 @@ function App() {
       return;
     }
 
+    if (selectedCentre) {
+      invalidateCentreDetailRequests();
+      setSelectedCentre(null);
+    }
     setPage(nextPage);
     setMobileOpen(false);
   };
@@ -1167,7 +1651,10 @@ function App() {
 };
   // Priorities can be tweaked right on the matches page; results re-rank instantly
   // and the change is saved back to the family profile.
-  const updateRank = (key, rank) => setWeights((current) => setRank(current, key, rank));
+  const updateRank = (key, rank) => {
+    setRestoredMatchSnapshot(null);
+    setWeights((current) => setRank(current, key, rank));
+  };
 
   useEffect(() => {
     if (!profile || !currentUser) return undefined;
@@ -1199,6 +1686,26 @@ function App() {
   // Rank the fetched candidates. Sliders re-rank instantly; no refetch is needed.
   const ranked = useMemo(() => {
     if (!matchRun) return [];
+    if (restoredMatchSnapshot?.length) {
+      const candidatesById = new Map(matchCandidates.map((candidate) => [String(candidate.centre.id), candidate]));
+      return restoredMatchSnapshot.map((result) => {
+        const candidate = candidatesById.get(String(result.id));
+        if (!candidate) return null;
+        return {
+          ...candidate.centre,
+          ...candidate.detail,
+          id: candidate.centre.id,
+          name: candidate.centre.name,
+          score: result.score,
+          fee: result.fee,
+          vf: result.vf,
+          cf: result.cf,
+          tf: result.tf,
+          vacancyLabel: result.vacancyLabel,
+          locationLabel: result.locationLabel,
+        };
+      }).filter(Boolean);
+    }
     const anchors = [matchRun.home, matchRun.work];
 
     return matchCandidates
@@ -1243,9 +1750,39 @@ function App() {
         (b.vf + b.cf + b.tf) - (a.vf + a.cf + a.tf) ||
         a.fee - b.fee
       );
-  }, [matchCandidates, matchRun, budget, weights]);
+  }, [matchCandidates, matchRun, budget, weights, restoredMatchSnapshot]);
+
+  useEffect(() => {
+    if (page !== 'Find my matches' || matchStatus !== 'loading' || !restoredMatchSnapshot?.length || !profile) return undefined;
+    const generation = ++matchRestoreGenerationRef.current;
+    const restoredRun = {
+      level: profile.level,
+      citizenship: profile.citizenship,
+      home: profile.home,
+      work: profile.work || '',
+      enrolMonth: profile.enrolMonth,
+    };
+    setMatchRun(restoredRun);
+    Promise.all(restoredMatchSnapshot.map(async (result) => {
+      const detail = await getCentreById(result.id);
+      const centre = mapCentre(detail);
+      return { centre: { ...centre, id: result.id }, detail };
+    })).then((candidates) => {
+      if (generation !== matchRestoreGenerationRef.current) return;
+      setMatchCandidates(candidates);
+      setMatchStatus('done');
+      setMatchMessage('Restored your previous match results.');
+    }).catch((error) => {
+      if (generation !== matchRestoreGenerationRef.current) return;
+      setMatchCandidates([]);
+      setMatchStatus('error');
+      setMatchMessage(error.message || 'Your previous match results could not be restored.');
+    });
+    return () => { matchRestoreGenerationRef.current += 1; };
+  }, [matchStatus, page, profile, restoredMatchSnapshot]);
 
   const runMatching = async () => {
+    setRestoredMatchSnapshot(null);
     const home = matchForm.home.trim();
     const work = matchForm.work.trim();
     if (!/^\d{6}$/.test(home)) {
@@ -1440,7 +1977,7 @@ function App() {
   const yesNo = (value) => (value == null ? 'Not provided' : value ? 'Yes' : 'No');
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${selectedCentre && !isOnboardingGated ? ' centre-page-active' : ''}`}>
       <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
         <div className="brand">
           <div className="brand-mark"><Baby size={24} /></div>
@@ -1899,7 +2436,7 @@ function App() {
                     <article className="panel centre-card" key={centre.id}>
                       <h3>{centre.name}</h3>
                       <p>{centre.address || 'Address not provided'}</p>
-                      <button className="secondary-btn" onClick={() => openCentreDetails(centre)}>
+                      <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                         View details
                       </button>
                     </article>
@@ -1995,7 +2532,7 @@ function App() {
                         {centre.gov_subsidy && <span>Government subsidy</span>}
                         {centre.transport_provided && <span>Transport</span>}
                       </div>
-                      <button className="primary-btn full" onClick={() => openCentreDetails(centre)}>
+                      <button className="primary-btn full" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                         View details <ChevronRight size={16} />
                       </button>
                     </article>
@@ -2049,7 +2586,7 @@ function App() {
                         <div><dt>Citizenship (for fees)</dt><dd>{CITIZENSHIP_LABELS[profile.citizenship]}</dd></div>
                         <div><dt>Home postal code</dt><dd>{profile.home}</dd></div>
                         <div><dt>Workplace postal code</dt><dd>{profile.work || 'Not set'}</dd></div>
-                        <div><dt>Monthly budget</dt><dd>${profile.budget}</dd></div>
+                        <div><dt>Monthly budget</dt><dd>${budget}</dd></div>
                         <div><dt>Enrolment month</dt><dd>{profile.enrolMonth}</dd></div>
                       </dl>
 
@@ -2159,7 +2696,7 @@ function App() {
                         {centre.transport_provided && <span>Transport</span>}
                       </div>
 
-                      <button className="secondary-btn" onClick={() => openCentreDetails(centre)}>
+                      <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                         View details
                       </button>
                     </article>
@@ -2217,7 +2754,7 @@ function App() {
                             )
                         ))}
 
-                      <button className="secondary-btn" onClick={() => openCentreDetails(centre)}>
+                      <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                         View details
                       </button>
 
@@ -2422,7 +2959,7 @@ function App() {
                         )}
                         {entry.error && <p className="fine-print">Could not load full details: {entry.error}</p>}
 
-                        <button className="secondary-btn" onClick={() => openCentreDetails(centre)}>
+                        <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
                           View full details
                         </button>
 
@@ -2623,49 +3160,91 @@ function App() {
       )}
 
       {selectedCentre && !isOnboardingGated && (
-        <div className="modal-backdrop" onClick={() => setSelectedCentre(null)}>
-          <section className="detail-modal" onClick={(event) => event.stopPropagation()}>
-            <button className="modal-close" onClick={() => setSelectedCentre(null)}>
-              <X size={19} />
-            </button>
-            {detailLoading ? (
-              <p>Loading centre details…</p>
+        <main className="centre-details-page" id="centre-details-top">
+          <div className="centre-details-inner">
+            <a className="centre-details-return" href="/" onClick={(event) => {
+              event.preventDefault();
+              if (!confirmReviewDeparture()) return;
+              const historyOriginId = window.history.state?.centreOriginId;
+              const candidateOrigin = returnContextReady && historyOriginId
+                ? (loadCentreReturnContext(currentUser?.uid || null, historyOriginId) ||
+                  (centreReturnOriginRef.current?.id === historyOriginId ? centreReturnOriginRef.current : null))
+                : null;
+              const origin = candidateOrigin?.uid === (currentUser?.uid || null) ? candidateOrigin : null;
+              const restoredPage = origin
+                ? permittedCentreOriginPage(origin, currentUser, onboardingState, profile)
+                : null;
+              const returnPath = origin?.returnPath || '/';
+              pushHistoryEntry({ centreReturn: true, ...(origin ? { centreOriginId: origin.id } : {}) }, returnPath);
+              invalidateCentreDetailRequests();
+              if (origin && restoredPage && centreReturnRestoredRef.current) pendingCentreOriginRestoreRef.current = origin;
+              setSelectedCentre(null);
+              if (origin && restoredPage && centreReturnRestoredRef.current) {
+                restoreCentreOriginState(origin, restoredPage);
+              } else {
+                centreReturnOriginRef.current = null;
+                openPage('Preschool directory', { reviewDepartureConfirmed: true });
+              }
+            }}>‹ Browse centres</a>
+            {detailError === 'Centre not found' ? (
+              <section className="centre-details-error" role="alert">
+                <h1 ref={centreHeadingRef} tabIndex="-1">Centre not found</h1>
+                <p>{detailError}</p>
+              </section>
+            ) : detailError === 'Please sign in to view centre details.' ? (
+              <section className="centre-details-error" role="status">
+                <h1 ref={centreHeadingRef} tabIndex="-1">Sign in to view this centre</h1>
+                <p>Sign in to browse centre details outside the guest preview.</p>
+                <button className="primary-btn" type="button" onClick={() => setAuthMode('login')}>Sign in</button>
+              </section>
             ) : (
               <>
-                <h1>{selectedCentre.name}</h1>
-                <p>
-                  {selectedCentre.address || 'Address not provided'}{' '}
-                  {selectedCentre.postal ? `(${selectedCentre.postal})` : ''}
-                </p>
-                <CentreCommute
-                  centre={selectedCentre}
-                  currentUser={currentUser}
-                  profileId={profileId}
-                  profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
-                  onSignIn={() => setAuthMode('login')}
-                  onEditProfile={() => {
-                    setSelectedCentre(null);
-                    openPage('Family profile');
-                  }}
-                />
-                <p><b>Centre code:</b> {selectedCentre.centre_code || 'Not provided'}</p>
-                <p><b>Contact:</b> {selectedCentre.contact || 'Not provided'}</p>
-                <p><b>Email:</b> {selectedCentre.email || 'Not provided'}</p>
-                {selectedCentre.website_url && (
-                  <p>
-                    <a href={websiteHref(selectedCentre.website_url)} target="_blank" rel="noreferrer">
-                      Visit website
-                    </a>
-                  </p>
-                )}
-                <p><b>Weekday hours:</b> {selectedCentre.weekday_full_day_hours || 'Not provided'}</p>
-                <p><b>Saturday hours:</b> {selectedCentre.saturday_hours || 'Not provided'}</p>
-                <p><b>Food offered:</b> {selectedCentre.food_offered || 'Not provided'}</p>
-                <p><b>Second languages:</b> {selectedCentre.second_languages || 'Not provided'}</p>
-                <p><b>SPARK certified:</b> {selectedCentre.spark_certified ? 'Yes' : 'No'}</p>
-                <p><b>Government subsidy:</b> {selectedCentre.gov_subsidy ? 'Yes' : 'No'}</p>
-                <p><b>Transport:</b> {selectedCentre.transport_provided ? 'Available' : 'Not listed'}</p>
-                <section className="parent-reviews" aria-labelledby="parent-reviews-title">
+                {detailError && <div className="centre-details-error" role="alert">
+                  <b>Centre details unavailable.</b> {detailError}
+                  <button className="secondary-btn" onClick={() => loadCentreInformation(selectedCentre.id)}>Try again</button>
+                </div>}
+                {detailLoading && <p className="centre-details-loading" role="status">Loading centre information…</p>}
+                <header className="centre-details-heading">
+                  <h1 ref={centreHeadingRef} tabIndex="-1">{selectedCentre.name}</h1>
+                  <p>{selectedCentre.address || 'Address not provided'} {selectedCentre.postal ? `(${selectedCentre.postal})` : ''}</p>
+                  <div className="centre-details-rating">★ <strong>{selectedCentre.review_summary?.average_rating != null ? Number(selectedCentre.review_summary.average_rating).toFixed(1) : '—'}</strong><span>{selectedCentre.review_summary?.total_reviews ?? 0} reviews</span></div>
+                </header>
+                <div className="centre-details-grid">
+                  <section className="centre-details-primary">
+                    <a className="skip-centre-map" href="#centre-commute-summary" onClick={(event) => {
+                      event.preventDefault();
+                      const destination = document.getElementById('centre-commute-summary') || document.getElementById('centre-details-facts');
+                      destination?.scrollIntoView({ block: 'start' });
+                      destination?.focus();
+                    }}>Skip map</a>
+                    <div id="centre-details-commute">
+                      <CentreCommute
+                        centre={selectedCentre}
+                        currentUser={currentUser}
+                        profileId={profileId}
+                        workplaceConfigured={profile ? Boolean(profile.work) : undefined}
+                        profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
+                        onSignIn={() => setAuthMode('login')}
+                        onEditProfile={() => openPage('Family profile')}
+                      />
+                    </div>
+                  </section>
+                  <aside className="centre-details-facts" id="centre-details-facts" tabIndex="-1">
+                    <h2>Centre information</h2>
+                    {selectedCentre.contact && <p><b>Phone</b><a href={`tel:${selectedCentre.contact}`}>{selectedCentre.contact}</a></p>}
+                    {selectedCentre.email && <p><b>Email</b><a href={`mailto:${selectedCentre.email}`}>{selectedCentre.email}</a></p>}
+                    {selectedCentre.website_url && <p><b>Website</b><a href={websiteHref(selectedCentre.website_url)} target="_blank" rel="noreferrer">Visit website <ArrowUpRight size={14} /></a></p>}
+                    <p><b>Centre code</b>{selectedCentre.centre_code || 'Not provided'}</p>
+                    <p><b>Weekday hours</b>{selectedCentre.weekday_full_day_hours || 'Not provided'}</p>
+                    <p><b>Saturday hours</b>{selectedCentre.saturday_hours || 'Not provided'}</p>
+                    <p><b>Food offered</b>{selectedCentre.food_offered || 'Not provided'}</p>
+                    <p><b>Second languages</b>{selectedCentre.second_languages || 'Not provided'}</p>
+                    <p><b>SPARK certified</b>{selectedCentre.spark_certified ? 'Yes' : 'No'}</p>
+                    <p><b>Government subsidy</b>{selectedCentre.gov_subsidy ? 'Yes' : 'No'}</p>
+                    <p><b>Transport</b>{selectedCentre.transport_provided ? 'Available' : 'Not listed'}</p>
+                  </aside>
+                </div>
+                <section className="parent-reviews" aria-labelledby="parent-reviews-title" ref={reviewsSectionRef} tabIndex="-1">
                   <div className="parent-reviews-heading">
                     <div>
                       <span className="review-eyebrow">PARENT VOICES</span>
@@ -2684,7 +3263,25 @@ function App() {
                     </div>
                   </div>
 
-                  {detailReviews.length ? (
+                  {detailReviewsLoading ? (
+                    <p role="status">Loading published reviews…</p>
+                  ) : detailReviewsError ? (
+                    <div className="reviews-empty-state" role="alert">
+                      <b>{detailReviewsError}</b>
+                      <button className="secondary-btn" type="button" onClick={() => {
+                        const requestGeneration = detailRequestRef.current;
+                        setDetailReviewsLoading(true);
+                        setDetailReviewsError('');
+                        getCentreReviews(selectedCentre.id).then((data) => {
+                          if (requestGeneration === detailRequestRef.current) setDetailReviews(data?.items || []);
+                        }).catch(() => {
+                          if (requestGeneration === detailRequestRef.current) setDetailReviewsError('Published reviews could not be loaded.');
+                        }).finally(() => {
+                          if (requestGeneration === detailRequestRef.current) setDetailReviewsLoading(false);
+                        });
+                      }}>Retry reviews</button>
+                    </div>
+                  ) : detailReviews.length ? (
                     <div className="parent-review-list">
                       {detailReviews.map((review) => (
                         <article className="parent-review-card" key={review.review_id}>
@@ -2727,7 +3324,12 @@ function App() {
                       <MessageCircleIcon />
                     </div>
                     {currentUser ? (
-                      <form className="parent-review-form" onSubmit={handleReviewSubmit}>
+                      myReviewLoading ? <p role="status">Loading your review…</p> : myReviewError ? (
+                        <div role="alert" className="reviews-empty-state">
+                          <p>{myReviewError}</p>
+                          <button className="secondary-btn" type="button" onClick={() => loadOwnCentreReview(selectedCentre.id)}>Retry your review</button>
+                        </div>
+                      ) : !myReviewKnown ? <p role="status">Confirming your review eligibility…</p> : <form className="parent-review-form" onSubmit={handleReviewSubmit}>
                         <label>How would you rate this preschool?</label>
                         <div className="rating-picker" role="radiogroup" aria-label="Choose a rating from one to five stars">
                           {[1, 2, 3, 4, 5].map((star) => (
@@ -2769,11 +3371,8 @@ function App() {
                 </section>
               </>
             )}
-            <button className="secondary-btn" onClick={() => setSelectedCentre(null)}>
-              Close
-            </button>
-          </section>
-        </div>
+          </div>
+        </main>
       )}
 
       {toast && (

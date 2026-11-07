@@ -102,6 +102,59 @@ describe("getCentreCommute API client", () => {
     );
   });
 
+  it("negotiates commute capabilities without changing legacy requests", async () => {
+    const capabilities = {
+      direct_baseline_contract: "direct_baseline_v1",
+      sampling_contract: null,
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, capabilities));
+
+    await expect(api.getCommuteCapabilities()).resolves.toEqual(capabilities);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.invalid/api/v1/commute/capabilities",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
+  it("opts into a direct baseline only when explicitly requested", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "drive" }));
+
+    await api.getCentreCommute(101, {
+      profileId: "prof-1",
+      includeDirectBaseline: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.invalid/api/v1/centres/101/commute",
+      expect.objectContaining({
+        body: JSON.stringify({
+          profile_id: "prof-1",
+          mode: "drive",
+          include_direct_baseline: true,
+        }),
+      })
+    );
+  });
+
+  it("keeps the legacy public-transport sample pair when opting into the baseline only", async () => {
+    const samplePair = ["2026-11-11T08:00:00+08:00", "2026-11-14T08:00:00+08:00"];
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "pt" }));
+
+    await api.getCentreCommute(101, {
+      profileId: "prof-1", mode: "pt", samplePair, includeDirectBaseline: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.invalid/api/v1/centres/101/commute",
+      expect.objectContaining({
+        body: JSON.stringify({
+          profile_id: "prof-1", mode: "pt", sample_pair: samplePair,
+          include_direct_baseline: true,
+        }),
+      })
+    );
+  });
+
   it("supports walking and cycling mode payloads", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "walk" }));
     fetchMock.mockResolvedValueOnce(jsonResponse(vi, { mode: "cycle" }));
@@ -128,6 +181,56 @@ describe("getCentreCommute API client", () => {
           mode: "cycle",
         }),
       })
+    );
+  });
+
+  it("sends selected sampling opt-in without changing legacy request bodies", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, { sampling_contract: "weekday_0800_wed_thu_fri_v1" }));
+    await api.getCentreCommute(101, {
+      profileId: "prof-1", mode: "pt", sampling: {
+        policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "cycle-a", sample_index: 1,
+      },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      profile_id: "prof-1", mode: "pt", sampling: {
+        policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "cycle-a", sample_index: 1,
+      },
+    });
+  });
+
+  it("sends the independent baseline and selected-sampling opt-ins together without a legacy pair", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, {
+      comparison_contract: "direct_baseline_v1",
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+    }));
+    await api.getCentreCommute(101, {
+      profileId: "prof-1", mode: "pt", includeDirectBaseline: true,
+      sampling: { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 },
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      profile_id: "prof-1",
+      mode: "pt",
+      include_direct_baseline: true,
+      sampling: { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 },
+    });
+  });
+
+  it("rejects contradictory or malformed selected sampling before making a request", async () => {
+    const sampling = { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 };
+    expect(() => api.getCentreCommute(101, { profileId: "prof-1", mode: "drive", sampling })).toThrow(/only valid for public transport/);
+    expect(() => api.getCentreCommute(101, { profileId: "prof-1", mode: "pt", samplePair: ["wed", "sat"], sampling })).toThrow(/cannot be combined/);
+    expect(() => api.getCentreCommute(101, { profileId: "prof-1", mode: "pt", sampling: { ...sampling, sample_index: 1 } })).toThrow(/Invalid selected weekday/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("discovers independent commute capabilities", async () => {
+    const capabilities = { direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" };
+    fetchMock.mockResolvedValueOnce(jsonResponse(vi, capabilities));
+    await expect(api.getCommuteCapabilities()).resolves.toEqual(capabilities);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.invalid/api/v1/commute/capabilities",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer test-token" }) })
     );
   });
 
