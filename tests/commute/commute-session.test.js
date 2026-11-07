@@ -7,6 +7,7 @@ import {
   setSessionSamplePair,
   resetSessionMode,
   resetRetainedSessionMode,
+  getProfileCommuteContextKey,
 } from "../../src/commute/commuteSession.js";
 
 describe("createCommuteSession controller", () => {
@@ -63,6 +64,15 @@ describe("createCommuteSession controller", () => {
       samples: [{ kind: "weekday", sampled_at: allowed[index].departure_at, via_status: unavailable ? "unavailable" : "available", reasons: unavailable ? [{ code: "no_itinerary", failure_class: "sample_dependent", retryable: false }] : [], legs: [], conditions: { conditions_id: allowed[index].conditions_id, timing_basis: "scheduled_departure", initial_departure_at: allowed[index].departure_at, provider_options_id: "timer-options-r1" }, totals: unavailable ? null : { duration_seconds: 1200, distance_meters: 4000 } }],
     };
   };
+
+  it("binds commute context to a saved revision or a stable profile snapshot", () => {
+    const first = { home: "123456", work: "234567", level: "n1", revision: "r1" };
+    expect(getProfileCommuteContextKey(first, "profile-1")).toBe(getProfileCommuteContextKey({ ...first }, "profile-1"));
+    expect(getProfileCommuteContextKey(first, "profile-1")).not.toBe(getProfileCommuteContextKey({ ...first, revision: "r2" }, "profile-1"));
+    const noRevision = { home: "123456", work: null, level: "n1" };
+    expect(getProfileCommuteContextKey(noRevision, "profile-1")).toBe(getProfileCommuteContextKey({ level: "n1", work: null, home: "123456" }, "profile-1"));
+    expect(getProfileCommuteContextKey(noRevision, "profile-1")).not.toBe(getProfileCommuteContextKey({ ...noRevision, level: "k1" }, "profile-1"));
+  });
 
   beforeEach(() => {
     session?.destroy();
@@ -150,6 +160,24 @@ describe("createCommuteSession controller", () => {
     expect(session.getState().data).toBeNull();
     expect(session.getState().setData["202"].centre_id).toBe(202);
     expect(session.getState().setErrors["101"].status).toBe(503);
+  });
+
+  it("retains route facts but marks the active multi-centre set incomparable when conditions differ", async () => {
+    const loadSet = vi.fn(async (centreId) => {
+      const response = mockCommute(centreId);
+      return {
+        ...response,
+        evaluation: { profile_revision: "profile-r1" },
+        samples: [{ ...response.samples[0], conditions: {
+          conditions_id: String(centreId) === "101" ? "conditions-a" : "conditions-b",
+          provider_options_id: "options-v1", timing_basis: "provider_default", initial_departure_at: null,
+        } }],
+      };
+    });
+    session = createCommuteSession({ loadCommute: loadSet, comparisonCentreIds: [101, 202], onState: (s) => states.push(s) });
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(Object.keys(session.getState().setData).sort()).toEqual(["101", "202"]);
+    expect(session.getState().comparisonCompatible).toBe(false);
   });
 
   it("discovers the direct-baseline contract before opting in, without requiring sampling support", async () => {

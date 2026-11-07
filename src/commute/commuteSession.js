@@ -154,6 +154,44 @@ export const resetCommuteSessionMode = resetSessionMode;
 export const resetRetainedSessionMode = resetSessionMode;
 export const getRetainedSessionMode = getSessionMode;
 
+function sortProfileSnapshot(value) {
+  if (Array.isArray(value)) return value.map(sortProfileSnapshot);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortProfileSnapshot(value[key])]));
+}
+
+export function getProfileCommuteContextKey(profile, profileId) {
+  const revision = profile?.profile_revision || profile?.revision || profile?.updated_at || profile?.updatedAt || null;
+  return JSON.stringify({
+    profileId: profileId == null ? null : String(profileId),
+    revision,
+    profile: revision ? null : sortProfileSnapshot(profile || null),
+    home: profile?.home ?? profile?.home_postal_code ?? null,
+    workplace: profile?.work ?? profile?.workplace_postal_code ?? null,
+  });
+}
+
+function hasCompatibleSetConditions(evaluations, expectedCount) {
+  const responses = evaluations.filter(({ response }) => response).map(({ response }) => response);
+  if (responses.length !== expectedCount) return false;
+  const first = responses[0];
+  const firstSample = first?.samples?.find((sample) => sample?.kind === (first.mode === "pt" ? "weekday" : "single")) || first?.samples?.[0];
+  const firstConditions = firstSample?.conditions;
+  const firstRevision = first?.evaluation?.profile_revision;
+  if (!firstConditions?.conditions_id || !firstConditions?.provider_options_id || !firstRevision) return false;
+  return evaluations.every(({ id, response }) => {
+    const sample = response?.samples?.find((item) => item?.kind === (response.mode === "pt" ? "weekday" : "single")) || response?.samples?.[0];
+    const conditions = sample?.conditions;
+    return response && String(response.centre_id) === String(id) &&
+      String(response.profile_id) === String(first.profile_id) && response.mode === first.mode &&
+      response.evaluation?.profile_revision === firstRevision &&
+      conditions?.conditions_id === firstConditions.conditions_id &&
+      conditions?.provider_options_id === firstConditions.provider_options_id &&
+      conditions?.timing_basis === firstConditions.timing_basis &&
+      conditions?.initial_departure_at === firstConditions.initial_departure_at;
+  });
+}
+
 function hasValidCapabilityDocument(document) {
   if (!document || typeof document !== "object" || Array.isArray(document)) return false;
   const hasDirectMarker = Object.prototype.hasOwnProperty.call(document, "direct_baseline_contract") &&
@@ -190,6 +228,8 @@ export function createCommuteSession({
   let data = null;
   let setData = {};
   let setErrors = {};
+  let comparisonCompatible = true;
+  let comparisonSetComplete = true;
   let sampling = null;
   let directBaselineStatus = directBaselineEnabled ? "unknown" : "disabled";
   let directBaselineError = null;
@@ -243,6 +283,8 @@ export function createCommuteSession({
       data,
       setData,
       setErrors,
+      comparisonCompatible,
+      comparisonSetComplete,
       sampling,
       directBaselineStatus,
       directBaselineError,
@@ -255,6 +297,8 @@ export function createCommuteSession({
       data = null;
       setData = {};
       setErrors = {};
+      comparisonCompatible = true;
+      comparisonSetComplete = true;
       sampling = null;
     }
     if (activeController) {
@@ -267,6 +311,8 @@ export function createCommuteSession({
       data = null;
       setData = {};
       setErrors = {};
+      comparisonCompatible = true;
+      comparisonSetComplete = true;
       sampling = null;
       error = null;
       emit();
@@ -339,6 +385,7 @@ export function createCommuteSession({
         data = null;
         setData = {};
         setErrors = {};
+        comparisonCompatible = true;
         loading = false;
         error = endpointAuthFailure;
         emit();
@@ -349,6 +396,8 @@ export function createCommuteSession({
 
       if (requestId === activeRequestId) {
         setErrors = Object.fromEntries(evaluations.filter(({ error: requestError }) => requestError).map(({ id, error: requestError }) => [String(id), requestError]));
+        comparisonSetComplete = requestIds.length < 2 || evaluations.every(({ response: item }) => Boolean(item));
+        comparisonCompatible = comparisonSetComplete && (requestIds.length < 2 || hasCompatibleSetConditions(evaluations, requestIds.length));
         data = response || null;
         setData = nextSetData;
         sampling = null;
@@ -779,6 +828,8 @@ export function createCommuteSession({
         data,
         setData,
         setErrors,
+        comparisonCompatible,
+        comparisonSetComplete,
         sampling,
         directBaselineStatus,
         directBaselineError,
@@ -795,6 +846,8 @@ export function createCommuteSession({
         data = null;
         setData = {};
         setErrors = {};
+        comparisonCompatible = true;
+        comparisonSetComplete = true;
         sampling = null;
         error = null;
       }
@@ -809,6 +862,8 @@ export function createCommuteSession({
       data = null;
       setData = {};
       setErrors = {};
+      comparisonCompatible = true;
+      comparisonSetComplete = true;
       sampling = null;
       error = null;
       if (centreId && profileId) {
@@ -852,6 +907,8 @@ export function createCommuteSession({
       data = null;
       setData = {};
       setErrors = {};
+      comparisonCompatible = true;
+      comparisonSetComplete = true;
       sampling = null;
       emit();
     },
@@ -896,6 +953,8 @@ export function useCommuteSession({
     data: null,
     setData: {},
     setErrors: {},
+    comparisonCompatible: true,
+    comparisonSetComplete: true,
     directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled",
     directBaselineError: null,
   });
@@ -928,7 +987,7 @@ export function useCommuteSession({
       setState({
         mode: getSessionMode(userId), selectedSample: 'weekday', selectedSampleKind: 'weekday',
         centreId, profileId, locationKey, samplePair: getSessionSamplePair(userId),
-        loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, setErrors: {}, sampling: null,
+        loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, setErrors: {}, comparisonCompatible: true, comparisonSetComplete: true, sampling: null,
         directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled", directBaselineError: null,
       });
     }
@@ -950,7 +1009,7 @@ export function useCommuteSession({
       selectedSampleKind: sessionRef.current.userId === userId ? state.selectedSampleKind : 'weekday',
       samplePair: sessionRef.current.userId === userId ? state.samplePair : currentSamplePair,
       centreId, profileId, locationKey,
-      loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, setErrors: {}, sampling: null,
+      loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, setErrors: {}, comparisonCompatible: true, comparisonSetComplete: true, sampling: null,
       directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled", directBaselineError: null,
     };
 
