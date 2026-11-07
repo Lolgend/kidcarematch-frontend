@@ -1,8 +1,9 @@
 import React from "react";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import { MapContainer, TileLayer, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import { useCentreLocation } from "./centreLocation.js";
 import MapViewportController from "./MapViewportController.jsx";
+import MapAnchorMarker from "./MapAnchorMarker.jsx";
 
 export function CentreLocationMapView({
   loading,
@@ -50,11 +51,7 @@ export function CentreLocationMapView({
               maxZoom={19}
               minZoom={11}
             />
-            <Marker position={[coordinate.lat, coordinate.lng]} alt="Centre" title="Centre">
-              <Popup>
-                <strong>{centreName || "Preschool Centre"}</strong>
-              </Popup>
-            </Marker>
+            <MapAnchorMarker kind="centre" position={[coordinate.lat, coordinate.lng]} popup={<Popup><strong>{centreName || "Preschool Centre"}</strong></Popup>} />
           </MapContainer>
         </div>
       )}
