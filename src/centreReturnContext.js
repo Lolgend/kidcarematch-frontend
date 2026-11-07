@@ -115,8 +115,13 @@ export function normalizeCentreComparisonContext(context) {
   const scrollY = Number(context.compareScrollY ?? context.scrollY ?? 0);
   if (!Number.isFinite(scrollY) || scrollY < 0 || scrollY > 10_000_000) return null;
   if (context.compareDistricts != null && !Array.isArray(context.compareDistricts)) return null;
-  const districts = (context.compareDistricts || []).map((district) => String(district ?? '').trim());
-  if (districts.some((district) => !district) || new Set(districts).size !== districts.length) return null;
+  const districts = (context.compareDistricts || []).map((district) => {
+    const value = typeof district === 'number' ? district : /^\d{1,2}$/.test(String(district ?? '').trim())
+      ? Number(String(district).trim())
+      : NaN;
+    return Number.isSafeInteger(value) && value >= 1 && value <= 28 ? value : null;
+  });
+  if (districts.some((district) => district === null) || new Set(districts).size !== districts.length) return null;
   return {
     page: 'Compare centres',
     compareStep: context.compareStep,

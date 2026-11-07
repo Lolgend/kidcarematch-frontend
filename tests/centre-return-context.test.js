@@ -55,13 +55,13 @@ describe("centre comparison return context", () => {
     const id = saveCentreReturnContext({
       uid: "user-1", page: "Compare centres", compareStep: "comparison",
       compareSelectedIds: ["centre-1", "centre-2"], compareQuery: privateSearch,
-      compareDistricts: ["D16"], compareWatchlistOnly: true, compareScrollY: 420,
+      compareDistricts: [16], compareWatchlistOnly: true, compareScrollY: 420,
     });
 
     expect(normalizeCentreComparisonContext(loadCentreReturnContext("user-2", id))).toBeNull();
     expect(normalizeCentreComparisonContext(loadCentreReturnContext("user-1", id))).toMatchObject({
       page: "Compare centres", compareStep: "comparison", compareSelectedIds: ["centre-1", "centre-2"],
-      compareQuery: "Bedok near {{kidcare-owned-home}}", compareDistricts: ["D16"], compareWatchlistOnly: true, compareScrollY: 420,
+      compareQuery: "Bedok near {{kidcare-owned-home}}", compareDistricts: [16], compareWatchlistOnly: true, compareScrollY: 420,
     });
     expect(JSON.stringify([...sessionStorage.values.values()])).not.toContain("123456");
     clearCentreReturnContext();
@@ -73,5 +73,7 @@ describe("centre comparison return context", () => {
     expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: ["a", "a"] })).toBeNull();
     expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: ["a", "b", "c", "d"] })).toBeNull();
     expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: [], compareScrollY: Infinity })).toBeNull();
+    expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: [], compareDistricts: [29] })).toBeNull();
+    expect(normalizeCentreComparisonContext({ page: "Compare centres", compareStep: "selection", compareSelectedIds: [], compareDistricts: ["bad"] })).toBeNull();
   });
 });
