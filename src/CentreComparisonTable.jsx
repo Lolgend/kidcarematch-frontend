@@ -1,4 +1,5 @@
 import React from 'react';
+import { MatchCommuteSummary } from './commute/MatchesCommute.jsx';
 
 const normalized = (value) => String(value ?? '').trim().toLocaleLowerCase('en');
 const levelNames = {
@@ -153,8 +154,14 @@ function Value({ children }) {
   return children;
 }
 
-export default function CentreComparisonTable({ centres, details, profile, onRetry, onViewDetails, onRemove }) {
+export default function CentreComparisonTable({ centres, details, profile, travel, onRetry, onViewDetails, onRemove }) {
   const rows = [
+    { key: 'travel', label: profile?.work ? 'Extra travel via centre' : 'Home to centre travel', render: (_entry, centre) => {
+      const summary = travel?.summaries?.[String(centre.id)];
+      if (!summary) return <span role="status">{travel?.loading ? 'Loading travel estimate…' : 'Travel estimate unavailable.'}</span>;
+      return <MatchCommuteSummary centre={centre} summary={summary} error={travel?.errors}
+        loading={travel?.loading} workplaceConfigured={Boolean(profile?.work)} onRetry={travel?.retry} />;
+    } },
     { key: 'fee', label: 'Monthly fee', render: (entry) => <FeeCell entry={entry} profile={profile} /> },
     { key: 'vacancies', label: 'Vacancy for your enrolment month', render: (entry) => <VacancyCell entry={entry} profile={profile} /> },
     { key: 'weekday', label: 'Weekday hours', get: (centre) => centre.weekday_full_day_hours },
