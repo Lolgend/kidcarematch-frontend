@@ -1807,6 +1807,16 @@ export function App() {
 
   // The backend owns matching scores and order. Keep each result intact for centre actions.
   const ranked = matchCandidates;
+  const matchExplanation = matchRun?.explanation;
+  const summaryNarrative = typeof matchExplanation?.summary_narrative === 'string'
+    ? matchExplanation.summary_narrative.trim()
+    : '';
+  const topCentreRationale = typeof matchExplanation?.top_centre_rationale === 'string'
+    ? matchExplanation.top_centre_rationale.trim()
+    : '';
+  const candidateHighlights = Array.isArray(matchExplanation?.candidate_highlights)
+    ? matchExplanation.candidate_highlights
+    : [];
   const matchIsOutdated = Boolean(matchRun && (
     matchRun.uid !== (currentUser?.uid || null) ||
     matchRun.criteriaVerified === false ||
@@ -2912,11 +2922,24 @@ export function App() {
                     />
                   )}
 
+                  {ranked.length > 0 && summaryNarrative && (
+                    <section className="match-explanation-summary" aria-labelledby="match-explanation-heading">
+                      <h3 id="match-explanation-heading">Why these matches</h3>
+                      <p>{summaryNarrative}</p>
+                    </section>
+                  )}
+
                   {['done', 'loading', 'error'].includes(matchStatus) && ranked.length > 0 && (
                     <MatchesCommute centres={ranked.slice(0, 10)} currentUser={currentUser} profileId={profileId}
                       profile={profile} onSignIn={() => setAuthMode('login')}>
                       {(commuteFor) => ranked.slice(0, 10).map((centre, index) => {
                         const commute = commuteFor(centre);
+                        const candidateHighlightValues = [candidateHighlights[index], centre.highlight]
+                          .filter((value) => typeof value === 'string' && value.trim())
+                          .map((value) => value.trim());
+                        const uniqueCandidateHighlights = candidateHighlightValues.filter((value, valueIndex) =>
+                          candidateHighlightValues.findIndex((candidate) => candidate.toLocaleLowerCase() === value.toLocaleLowerCase()) === valueIndex
+                        );
                         return <article className="panel centre-card" key={centre.id} style={{ marginBottom: 16 }}>
                           <div className="centre-card-top">
                             <span className="eyebrow">#{index + 1}{centre.score != null ? ` · ${centre.score}% match` : ''}</span>
@@ -2925,6 +2948,8 @@ export function App() {
                             </button>
                           </div>
                           <h3>{centre.name}</h3>
+                          {index === 0 && topCentreRationale && <p className="match-explanation-detail">{topCentreRationale}</p>}
+                          {uniqueCandidateHighlights.map((highlight) => <p className="match-explanation-detail" key={highlight}>{highlight}</p>)}
                           <p><MapPin size={14} /> {centre.address || 'Address not provided'}</p>
                           {(centre.fee_breakdown?.published_fee ?? centre.monthly_fee ?? centre.fee ?? centre.fee_breakdown?.monthly_fee ?? centre.fee_breakdown?.listed_monthly_fee) != null && <p>
                             Published monthly fee: <strong>{money(centre.fee_breakdown?.published_fee ?? centre.monthly_fee ?? centre.fee ?? centre.fee_breakdown?.monthly_fee ?? centre.fee_breakdown?.listed_monthly_fee)}</strong>
