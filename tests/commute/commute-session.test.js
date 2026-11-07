@@ -912,4 +912,488 @@ describe("createCommuteSession controller", () => {
     expect(session.getState().sampling).toBe(null);
     expect(loadCommute.mock.calls.some(([id, request]) => String(id) === "202" && request.mode === "pt")).toBe(false);
   });
+
+  it("negotiates baseline and sampling independently and sends both opt-ins when both are supported", async () => {
+    const capabilityDocument = {
+      direct_baseline_contract: "direct_baseline_v1",
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+    };
+    const sampled = selectedCycleResponse(101, 0);
+    loadCommute = vi.fn().mockResolvedValue({
+      ...sampled,
+      comparison_contract: "direct_baseline_v1",
+      samples: [{ ...sampled.samples[0], direct_route: { status: "unavailable", legs: [], totals: null, reasons: [] }, comparison: { status: "unavailable", reasons: [], certification: null } }],
+    });
+    const getCapabilities = vi.fn().mockResolvedValue(capabilityDocument);
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities,
+      selectedSamplingEnabled: true,
+      directBaselineEnabled: true,
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1", locationKey: "home-rev-1" });
+
+    expect(getCapabilities).toHaveBeenCalledTimes(1);
+    expect(loadCommute.mock.calls[0][1]).toEqual({
+      profileId: "prof-1",
+      mode: "pt",
+      samplePair: null,
+      includeDirectBaseline: true,
+      sampling: { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: null, sample_index: 0 },
+    });
+    expect(session.getState().directBaselineStatus).toBe("supported");
+  });
+
+  it("advances the whole selected set when a required direct component has classified no-itinerary", async () => {
+    const allowed = [
+      { sample_index: 0, conditions_id: "shared-wed", departure_at: "2026-11-11T08:00:00+08:00" },
+      { sample_index: 1, conditions_id: "shared-thu", departure_at: "2026-11-12T08:00:00+08:00" },
+      { sample_index: 2, conditions_id: "shared-fri", departure_at: "2026-11-13T08:00:00+08:00" },
+    ];
+    const combinedResponse = (id, index, directUnavailable = false) => ({
+      centre_id: id,
+      profile_id: "prof-1",
+      mode: "pt",
+      sample_pair: null,
+      comparison_contract: "direct_baseline_v1",
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+      evaluation: { evaluation_id: `combined-${id}-${index}`, evaluated_at: "2026-11-07T09:00:00+08:00", profile_revision: "profile-rev-1", anchor_revision: `anchor-${id}` },
+      sampling: { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "combined-cycle", cycle_expires_at: allowed[0].departure_at, selected_index: index, allowed_samples: allowed },
+      samples: [{
+        kind: "weekday",
+        sampled_at: allowed[index].departure_at,
+        conditions: { conditions_id: allowed[index].conditions_id, timing_basis: "scheduled_departure", initial_departure_at: allowed[index].departure_at, provider_options_id: "pt-options" },
+        via_status: "available",
+        reasons: [],
+        legs: [],
+        totals: { duration_seconds: 1800, distance_meters: 3000 },
+        direct_route: directUnavailable
+          ? { status: "unavailable", legs: [], totals: null, reasons: [{ code: "no_itinerary", failure_class: "sample_dependent", retryable: false }] }
+          : { status: "unavailable", legs: [], totals: null, reasons: [{ code: "workplace_unresolved", failure_class: "location", retryable: false }] },
+        comparison: { status: "unavailable", reasons: [{ code: "direct_unavailable", failure_class: "conditions", retryable: false }], certification: null },
+      }],
+    });
+    const getCapabilities = vi.fn().mockResolvedValue({
+      direct_baseline_contract: "direct_baseline_v1",
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+    });
+    loadCommute = vi.fn(async (id, request) => {
+      const index = request.sampling.sample_index;
+      return combinedResponse(id, index, index === 0 && String(id) === "202");
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities,
+      selectedSamplingEnabled: true,
+      directBaselineEnabled: true,
+      comparisonCentreIds: [101, 202],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1", locationKey: "home-rev-1" });
+
+    expect(loadCommute).toHaveBeenCalledTimes(4);
+    expect(loadCommute.mock.calls.map(([, request]) => request.sampling.sample_index)).toEqual([0, 0, 1, 1]);
+    expect(loadCommute.mock.calls.every(([, request]) => request.includeDirectBaseline === true)).toBe(true);
+    expect(session.getState().sampling.selected_index).toBe(1);
+    expect(Object.keys(session.getState().setData)).toEqual(["101", "202"]);
+    expect(session.getState().setData["101"].samples[0].totals.duration_seconds).toBe(1800);
+    expect(session.getState().setData["202"].samples[0].totals.duration_seconds).toBe(1800);
+  });
+
+  it("keeps direct location, timing, and service failures out of calendar fallback", async () => {
+    const capabilityDocument = {
+      direct_baseline_contract: "direct_baseline_v1",
+      sampling_contract: "weekday_0800_wed_thu_fri_v1",
+    };
+    const selected = selectedCycleResponse(101, 0);
+    const failures = [
+      { code: "workplace_unresolved", failure_class: "location", retryable: false },
+      { code: "timing_unverified", failure_class: "conditions", retryable: false },
+      { code: "provider_timeout", failure_class: "service", retryable: true },
+    ];
+    for (const reason of failures) {
+      loadCommute = vi.fn().mockResolvedValue({
+        ...selected,
+        comparison_contract: "direct_baseline_v1",
+        samples: [{
+          ...selected.samples[0],
+          direct_route: { status: "unavailable", legs: [], totals: null, reasons: [reason] },
+          comparison: { status: "unavailable", reasons: [{ code: "direct_unavailable", failure_class: "conditions", retryable: false }], certification: null },
+        }],
+      });
+      session = createCommuteSession({
+        loadCommute,
+        getCapabilities: vi.fn().mockResolvedValue(capabilityDocument),
+        selectedSamplingEnabled: true,
+        directBaselineEnabled: true,
+        now: () => new Date("2026-11-07T09:00:00+08:00"),
+      });
+      await session.setMode("pt");
+      await session.open({ centreId: 101, profileId: "prof-1" });
+      expect(loadCommute).toHaveBeenCalledTimes(1);
+      expect(session.getState().sampling.selected_index).toBe(0);
+      session.destroy();
+    }
+  });
+
+  it("advances for a separate via no-itinerary result when direct timing is uncertified", async () => {
+    loadCommute = vi.fn(async (_id, request) => {
+      const index = request.sampling.sample_index;
+      const response = selectedCycleResponse(101, index, { unavailable: index === 0 });
+      response.comparison_contract = "direct_baseline_v1";
+      response.samples[0].direct_route = {
+        status: "unavailable", legs: [], totals: null,
+        reasons: [{ code: "timing_unverified", failure_class: "conditions", retryable: false }],
+      };
+      response.samples[0].comparison = {
+        status: "unavailable", reasons: [{ code: "direct_unavailable", failure_class: "conditions", retryable: false }], certification: null,
+      };
+      if (index === 0) response.samples[0].legs[0] = {
+        from_anchor: "home", to_anchor: "centre", status: "unavailable", source: null,
+        duration_seconds: null, distance_meters: null, geometry: null,
+        reasons: [{ code: "no_itinerary", failure_class: "sample_dependent", retryable: false }],
+      };
+      return response;
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: "direct_baseline_v1", sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      directBaselineEnabled: true,
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(loadCommute).toHaveBeenCalledTimes(2);
+    expect(loadCommute.mock.calls.map(([, request]) => request.sampling.sample_index)).toEqual([0, 1]);
+    expect(session.getState().sampling.selected_index).toBe(1);
+    expect(session.getState().data.samples[0].direct_route.reasons[0].code).toBe("timing_unverified");
+    expect(session.getState().data.samples[0].totals.duration_seconds).toBe(1200);
+  });
+
+  it("does not calendar-cycle a verified via absence through a direct provider service failure", async () => {
+    const response = selectedCycleResponse(101, 0, { unavailable: true });
+    response.comparison_contract = "direct_baseline_v1";
+    response.samples[0].direct_route = {
+      status: "unavailable", legs: [], totals: null,
+      reasons: [{ code: "provider_timeout", failure_class: "service", retryable: true }],
+    };
+    response.samples[0].comparison = {
+      status: "unavailable", reasons: [{ code: "direct_unavailable", failure_class: "conditions", retryable: false }], certification: null,
+    };
+    loadCommute = vi.fn().mockResolvedValue(response);
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: "direct_baseline_v1", sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      directBaselineEnabled: true,
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(loadCommute).toHaveBeenCalledTimes(1);
+    expect(session.getState().sampling.selected_index).toBe(0);
+  });
+
+  it("keeps all four independently controlled capability combinations usable", async () => {
+    const combinations = [
+      { selectedSamplingEnabled: false, directBaselineEnabled: false, markers: { direct_baseline_contract: null, sampling_contract: null }, expectedBaseline: false, expectedSampling: false },
+      { selectedSamplingEnabled: false, directBaselineEnabled: true, markers: { direct_baseline_contract: "direct_baseline_v1", sampling_contract: null }, expectedBaseline: true, expectedSampling: false },
+      { selectedSamplingEnabled: true, directBaselineEnabled: false, markers: { direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }, expectedBaseline: false, expectedSampling: true },
+      { selectedSamplingEnabled: true, directBaselineEnabled: true, markers: { direct_baseline_contract: "direct_baseline_v1", sampling_contract: "weekday_0800_wed_thu_fri_v1" }, expectedBaseline: true, expectedSampling: true },
+    ];
+    for (const combo of combinations) {
+      resetSessionMode();
+      const response = combo.expectedSampling
+        ? { ...selectedCycleResponse(101, 0), ...(combo.expectedBaseline ? { comparison_contract: "direct_baseline_v1" } : {}) }
+        : { ...mockCommute(), ...(combo.expectedBaseline ? { comparison_contract: "direct_baseline_v1" } : {}) };
+      loadCommute = vi.fn().mockResolvedValue(response);
+      const getCapabilities = vi.fn().mockResolvedValue(combo.markers);
+      session = createCommuteSession({
+        loadCommute, getCapabilities,
+        selectedSamplingEnabled: combo.selectedSamplingEnabled,
+        directBaselineEnabled: combo.directBaselineEnabled,
+        now: () => new Date("2026-11-07T09:00:00+08:00"),
+      });
+      await session.setMode("pt");
+      await session.open({ centreId: 101, profileId: "prof-1" });
+
+      const request = loadCommute.mock.calls.at(-1)[1];
+      expect(Boolean(request.includeDirectBaseline)).toBe(combo.expectedBaseline);
+      expect(Boolean(request.sampling)).toBe(combo.expectedSampling);
+      expect(session.getState().data).not.toBe(null);
+      expect(session.getState().directBaselineStatus === "supported").toBe(combo.expectedBaseline);
+      session.destroy();
+    }
+  });
+
+  it("preserves usable direct and partial via data when all selected samples are exhausted", async () => {
+    const allowed = [
+      { sample_index: 0, conditions_id: "exhaust-wed", departure_at: "2026-11-11T08:00:00+08:00" },
+      { sample_index: 1, conditions_id: "exhaust-thu", departure_at: "2026-11-12T08:00:00+08:00" },
+      { sample_index: 2, conditions_id: "exhaust-fri", departure_at: "2026-11-13T08:00:00+08:00" },
+    ];
+    const partialRoute = {
+      from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap",
+      duration_seconds: 900, distance_meters: 1200, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.31, lng: 103.81 }], reasons: [],
+    };
+    const directLeg = {
+      from_anchor: "home", to_anchor: "workplace", status: "available", source: "onemap",
+      duration_seconds: 1200, distance_meters: 1800, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.32, lng: 103.82 }], reasons: [],
+    };
+    loadCommute = vi.fn(async (_id, request) => ({
+      centre_id: 101, profile_id: "prof-1", mode: "pt", sample_pair: null,
+      comparison_contract: "direct_baseline_v1", sampling_contract: "weekday_0800_wed_thu_fri_v1",
+      evaluation: { evaluation_id: `exhaust-${request.sampling.sample_index}`, evaluated_at: "2026-11-07T09:00:00+08:00", profile_revision: "profile-rev", anchor_revision: "anchor-rev" },
+      sampling: { policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "exhausted-cycle", cycle_expires_at: allowed[0].departure_at, selected_index: request.sampling.sample_index, allowed_samples: allowed },
+      samples: [{
+        kind: "weekday", sampled_at: allowed[request.sampling.sample_index].departure_at,
+        conditions: { conditions_id: allowed[request.sampling.sample_index].conditions_id, timing_basis: "scheduled_departure", initial_departure_at: allowed[request.sampling.sample_index].departure_at, provider_options_id: "pt-options" },
+        via_status: "partial", reasons: [{ code: "no_itinerary", failure_class: "sample_dependent", retryable: false }],
+        legs: [partialRoute], totals: null,
+        direct_route: { status: "available", legs: [directLeg], totals: { duration_seconds: 1200, distance_meters: 1800 }, reasons: [] },
+        comparison: { status: "unavailable", reasons: [{ code: "via_centre_incomplete", failure_class: "conditions", retryable: false }], certification: null },
+      }],
+    }));
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: "direct_baseline_v1", sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      directBaselineEnabled: true,
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(loadCommute).toHaveBeenCalledTimes(3);
+    expect(session.getState().data.samples[0].via_status).toBe("partial");
+    expect(session.getState().data.samples[0].totals).toBe(null);
+    expect(session.getState().data.samples[0].direct_route.status).toBe("available");
+  });
+
+  it("rejects selected-set results with different provider options", async () => {
+    const selectedResponse = (id, options) => {
+      const response = selectedCycleResponse(id, 0);
+      response.samples[0].conditions.provider_options_id = options;
+      return response;
+    };
+    loadCommute = vi.fn(async (id) => selectedResponse(id, String(id) === "101" ? "options-a" : "options-b"));
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      comparisonCentreIds: [101, 202],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(session.getState().data).toBe(null);
+    expect(session.getState().setData).toEqual({});
+    expect(session.getState().error.message).toMatch(/conditions differ/);
+  });
+
+  it("retains current-condition results during a same-sample user retry", async () => {
+    let resolveRetry;
+    let loads = 0;
+    loadCommute = vi.fn((id, request) => {
+      loads += 1;
+      if (loads === 1) return Promise.resolve(selectedCycleResponse(id, request.sampling.sample_index));
+      return new Promise((resolve) => { resolveRetry = resolve; });
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(session.getState().data).not.toBe(null);
+
+    const retry = session.retry();
+    await Promise.resolve();
+
+    expect(loadCommute.mock.calls.at(-1)[1].sampling).toEqual({
+      policy: "weekday_0800_wed_thu_fri_v1", cycle_id: "timer-cycle-1", sample_index: 0,
+    });
+    expect(session.getState().data).not.toBe(null);
+    expect(session.getState().setData["101"].sampling.cycle_id).toBe("timer-cycle-1");
+    resolveRetry(selectedCycleResponse(101, 0));
+    await retry;
+  });
+
+  it("clears all retained private commute data after endpoint authorization expires", async () => {
+    const authorizationError = Object.assign(new Error("401: unauthenticated"), {
+      status: 401, code: "unauthenticated", failureClass: "authentication",
+    });
+    let calls = 0;
+    loadCommute = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) return mockCommute();
+      throw authorizationError;
+    });
+    session = createCommuteSession({ loadCommute });
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(session.getState().data).not.toBe(null);
+
+    await session.retry();
+
+    expect(session.getState().error).toBe(authorizationError);
+    expect(session.getState().data).toBe(null);
+    expect(session.getState().setData).toEqual({});
+  });
+
+  it("treats provider authorization as service failure and keeps same-condition successes visible", async () => {
+    const providerAuthError = Object.assign(new Error("401: provider auth failed"), {
+      status: 401, code: "provider_auth_failed", failureClass: "service",
+    });
+    let calls = 0;
+    loadCommute = vi.fn(async (id, request) => {
+      calls += 1;
+      if (calls === 1) return selectedCycleResponse(id, request.sampling.sample_index);
+      throw providerAuthError;
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    await session.retry();
+
+    expect(loadCommute.mock.calls.map(([, request]) => request.sampling.sample_index)).toEqual([0, 0]);
+    expect(session.getState().data.samples[0].via_status).toBe("available");
+    expect(session.getState().error).toBe(providerAuthError);
+  });
+
+  it("does not resurrect Wednesday survivors after the shared set advances and a Thursday centre fails", async () => {
+    let retrying = false;
+    loadCommute = vi.fn(async (id, request) => {
+      const index = request.sampling.sample_index;
+      if (!retrying) return selectedCycleResponse(id, index);
+      if (index === 0 && String(id) === "202") return selectedCycleResponse(id, index, { unavailable: true });
+      if (index === 1 && String(id) === "202") {
+        throw Object.assign(new Error("503: provider unavailable"), { status: 503, code: "provider_unavailable", failureClass: "service" });
+      }
+      return selectedCycleResponse(id, index);
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      comparisonCentreIds: [101, 202],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1", locationKey: "home-rev-1" });
+    expect(Object.keys(session.getState().setData)).toEqual(["101", "202"]);
+    retrying = true;
+
+    await session.retry();
+
+    expect(loadCommute.mock.calls.map(([, request]) => request.sampling.sample_index)).toEqual([0, 0, 0, 0, 1, 1]);
+    expect(Object.keys(session.getState().setData)).toEqual(["101"]);
+    expect(session.getState().setData["101"].samples[0].sampled_at).toBe("2026-11-12T00:00:00.000Z");
+    expect(session.getState().setData["202"]).toBeUndefined();
+    expect(session.getState().error.status).toBe(503);
+  });
+
+  it("retains a failed direct route from the same condition but withholds mixed-evaluation deviation", async () => {
+    const allowed = [
+      { sample_index: 0, conditions_id: "stable-condition", departure_at: "2026-11-11T08:00:00+08:00" },
+      { sample_index: 1, conditions_id: "stable-condition-thu", departure_at: "2026-11-12T08:00:00+08:00" },
+      { sample_index: 2, conditions_id: "stable-condition-fri", departure_at: "2026-11-13T08:00:00+08:00" },
+    ];
+    const directLeg = {
+      from_anchor: "home", to_anchor: "workplace", status: "available", source: "onemap",
+      duration_seconds: 1500, distance_meters: 8000,
+      geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.28, lng: 103.85 }], reasons: [],
+    };
+    const combined = (directUnavailable) => ({
+      ...selectedCycleResponse(101, 0), comparison_contract: "direct_baseline_v1",
+      sampling: { ...selectedCycleResponse(101, 0).sampling, allowed_samples: allowed },
+      samples: [{ ...selectedCycleResponse(101, 0).samples[0], conditions: {
+        conditions_id: allowed[0].conditions_id, timing_basis: "scheduled_departure",
+        initial_departure_at: allowed[0].departure_at, provider_options_id: "pt-options",
+      },
+      direct_route: directUnavailable
+        ? { status: "unavailable", legs: [], totals: null, reasons: [{ code: "workplace_unresolved", failure_class: "location", retryable: false }] }
+        : { status: "available", legs: [directLeg], totals: { duration_seconds: 1500, distance_meters: 8000 }, reasons: [] },
+      comparison: directUnavailable
+        ? { status: "unavailable", reasons: [{ code: "direct_unavailable", failure_class: "conditions", retryable: false }], certification: null }
+        : { status: "unavailable", reasons: [], certification: null },
+      }],
+    });
+    let call = 0;
+    loadCommute = vi.fn(async () => combined(call++ > 0));
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: "direct_baseline_v1", sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      directBaselineEnabled: true,
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1", locationKey: "home-rev-1" });
+    await session.retry();
+
+    const retried = session.getState().data.samples[0];
+    expect(retried.via_status).toBe("available");
+    expect(retried.direct_route.status).toBe("available");
+    expect(retried.comparison.status).toBe("unavailable");
+    expect(retried.comparison.certification).toBe(null);
+  });
+
+  it("retains a previously usable via leg for the same sample while withholding complete totals", async () => {
+    const departure = "2026-11-11T08:00:00+08:00";
+    const arrival = "2026-11-11T08:15:00+08:00";
+    const firstLeg = {
+      from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap",
+      duration_seconds: 900, distance_meters: 4000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }],
+      departure_at: departure, arrival_at: arrival, reasons: [],
+    };
+    const secondLeg = {
+      from_anchor: "centre", to_anchor: "workplace", status: "available", source: "onemap",
+      duration_seconds: 900, distance_meters: 5000, geometry: [{ lat: 1.35, lng: 103.85 }, { lat: 1.28, lng: 103.85 }],
+      departure_at: arrival, arrival_at: "2026-11-11T08:30:00+08:00", reasons: [],
+    };
+    const makeResponse = (secondUnavailable) => {
+      const response = selectedCycleResponse(101, 0);
+      const sample = response.samples[0];
+      sample.conditions.initial_departure_at = departure;
+      sample.legs = [firstLeg, secondUnavailable ? {
+        ...secondLeg, status: "unavailable", source: null, duration_seconds: null, distance_meters: null,
+        geometry: null, reasons: [{ code: "workplace_unresolved", failure_class: "location", retryable: false }],
+      } : secondLeg];
+      sample.via_status = secondUnavailable ? "partial" : "available";
+      sample.totals = secondUnavailable ? null : { duration_seconds: 1800, distance_meters: 9000 };
+      sample.reasons = secondUnavailable ? [{ code: "workplace_unresolved", failure_class: "location", retryable: false }] : [];
+      return response;
+    };
+    let call = 0;
+    loadCommute = vi.fn(async () => makeResponse(call++ > 0));
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    await session.retry();
+
+    const retried = session.getState().data.samples[0];
+    expect(retried.via_status).toBe("partial");
+    expect(retried.legs.map((leg) => leg.status)).toEqual(["available", "available"]);
+    expect(retried.totals).toBe(null);
+  });
 });

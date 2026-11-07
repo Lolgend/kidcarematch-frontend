@@ -51,6 +51,69 @@ vi.mock("leaflet", () => ({ divIcon: (options) => options }));
 import { CentreCommuteView } from "../../src/commute/CentreCommute.jsx";
 
 describe("CentreCommute presentation", () => {
+  it("keeps usable current-context routes visible while refreshing or showing an independent error", () => {
+    const activeData = {
+      centre_id: 101, profile_id: "prof-1", mode: "drive",
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 }, workplace: null },
+      samples: [{
+        kind: "single", via_status: "available",
+        legs: [{ from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap", duration_seconds: 600, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }] }],
+        totals: { duration_seconds: 600, distance_meters: 5000 },
+      }],
+    };
+    const render = (props) => renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "prof-1", workplaceConfigured: false,
+      centre: { id: 101, name: "Star Preschool" }, mode: "drive", directBaselineStatus: "disabled",
+      ...props,
+    }));
+
+    const refreshing = render({ loading: true, error: null, data: activeData });
+    expect(refreshing).toContain("Refreshing commute estimates. Showing available results for this selection.");
+    expect(refreshing).toContain("Total travel: 10 mins");
+
+    const failedRefresh = render({ loading: false, error: Object.assign(new Error("503: unavailable"), { status: 503 }), data: activeData });
+    expect(failedRefresh).toContain("Some commute estimates could not be refreshed.");
+    expect(failedRefresh).toContain("Total travel: 10 mins");
+    expect(failedRefresh).toContain("Retry route");
+  });
+
+  it("offers sign-in or parent-account recovery for commute authorization failures", () => {
+    const previousPrivateRoute = {
+      centre_id: 101, profile_id: "prof-1", mode: "drive",
+      anchors: { home: { lat: 1.3, lng: 103.8 }, centre: { lat: 1.35, lng: 103.85 }, workplace: null },
+      samples: [{ kind: "single", via_status: "available",
+        legs: [{ from_anchor: "home", to_anchor: "centre", status: "available", source: "onemap", duration_seconds: 600, distance_meters: 5000, geometry: [{ lat: 1.3, lng: 103.8 }, { lat: 1.35, lng: 103.85 }] }],
+        totals: { duration_seconds: 600, distance_meters: 5000 } }],
+    };
+    const render = (status) => renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "prof-1", workplaceConfigured: false,
+      centre: { id: 101, name: "Star Preschool" }, loading: false,
+      error: Object.assign(new Error(`${status}: denied`), { status }),
+      data: previousPrivateRoute, setData: { "101": previousPrivateRoute },
+      onSignIn: () => {},
+    }));
+
+    const expired = render(401);
+    expect(expired).toContain("Your sign-in has expired. Sign in again to load your personal commute route.");
+    expect(expired).toContain(">Sign in</button>");
+    expect(expired).not.toContain("Total travel:");
+    expect(expired).not.toContain("centre-commute-map");
+    const forbidden = render(403);
+    expect(forbidden).toContain("This account cannot access personal commute routes. Switch to a parent account to continue.");
+    expect(forbidden).toContain(">Sign in with a parent account</button>");
+    expect(forbidden).not.toContain("Total travel:");
+
+    const providerAuth = renderToStaticMarkup(React.createElement(CentreCommuteView, {
+      currentUser: { uid: "u1" }, profileId: "prof-1", workplaceConfigured: false,
+      centre: { id: 101, name: "Star Preschool" }, loading: false,
+      error: Object.assign(new Error("401: provider auth failed"), { status: 401, code: "provider_auth_failed", failureClass: "service" }),
+      data: previousPrivateRoute,
+    }));
+    expect(providerAuth).toContain("Some commute estimates could not be refreshed.");
+    expect(providerAuth).toContain("Total travel: 10 mins");
+    expect(providerAuth).not.toContain("Your sign-in has expired");
+  });
+
   it("renders guest prompt when user is not signed in", () => {
     const html = renderToStaticMarkup(
       React.createElement(CentreCommuteView, {
