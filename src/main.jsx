@@ -21,10 +21,14 @@ import {
 import { auth } from './firebase';
 import AdminDashboard from './admin/AdminDashboard';
 import CentreCommute from './commute/CentreCommute';
+import MatchesCommute, { MatchCommuteSummary } from './commute/MatchesCommute.jsx';
+import ComparisonCommuteTable from './commute/ComparisonCommuteTable.jsx';
+import CompareIdentityStatus from './CompareIdentityStatus.jsx';
+import { getProfileCommuteContextKey } from './commute/commuteSession.js';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
 import { centreDetailsPath, centreIdFromPath } from './centreDetailsRoute';
-import { claimCentreReturnTab, clearCentreReturnContext, hasCentreReturnAccount, loadCentreReturnContext, protectCentreReturnQuery, restoreCentreReturnQuery, saveCentreReturnContext } from './centreReturnContext';
+import { claimCentreReturnTab, clearCentreReturnContext, hasCentreReturnAccount, loadCentreReturnContext, normalizeCentreComparisonContext, protectCentreReturnQuery, restoreCentreReturnQuery, saveCentreReturnContext } from './centreReturnContext';
 import {
   getCentres,
   getCentreById,
@@ -531,7 +535,25 @@ function App() {
   const [returnContextReady, setReturnContextReady] = useState(false);
 
   // Hooks must live inside the component (this was at module level before).
-  const [compareSelectedIds, setCompareSelectedIds] = useState([]);
+  const [compareSelectedIds, setCompareSelectedIdsState] = useState([]);
+  const compareSelectionGenerationRef = useRef(0);
+  const setCompareSelectedIds = (nextIds) => {
+    compareSelectionGenerationRef.current += 1;
+    setCompareSelectedIdsState(nextIds);
+  };
+  const [compareStep, setCompareStep] = useState('selection');
+  const [compareSelectionScrollY, setCompareSelectionScrollY] = useState(0);
+  const pendingComparisonScrollRef = useRef(null);
+  const [compareQuery, setCompareQuery] = useState('');
+  const [compareDistricts, setCompareDistricts] = useState([]);
+  const [compareWatchlistOnly, setCompareWatchlistOnly] = useState(false);
+  const [compareDirectoryCentres, setCompareDirectoryCentres] = useState([]);
+  const [compareDirectoryStatus, setCompareDirectoryStatus] = useState('idle');
+  const [compareDirectoryError, setCompareDirectoryError] = useState('');
+  const [compareDirectoryReload, setCompareDirectoryReload] = useState(0);
+  const [compareIdentityStatus, setCompareIdentityStatus] = useState({});
+  const compareIdentityRequestsRef = useRef(new Map());
+  const [compareIdentityReload, setCompareIdentityReload] = useState(0);
 
   const [saved, setSaved] = useState([]);
 
@@ -565,6 +587,15 @@ function App() {
   }, [authResolved, currentUser?.uid]);
 
   const [compareDetails, setCompareDetails] = useState({});
+  const [compareDetailRetries, setCompareDetailRetries] = useState({});
+  const compareDetailRequestRef = useRef(0);
+  const compareDetailSelectionKeyRef = useRef('');
+  const compareDetailSelectionGenerationRef = useRef(0);
+  const renderedCompareSelectionKey = compareSelectedIds.map(String).join('\u0000');
+  if (compareDetailSelectionKeyRef.current !== renderedCompareSelectionKey) {
+    compareDetailSelectionKeyRef.current = renderedCompareSelectionKey;
+    compareDetailSelectionGenerationRef.current += 1;
+  }
   const [budget, setBudget] = useState(750);
   const [matchForm, setMatchForm] = useState({ level: 'n1', citizenship: 'SC', home: '', work: '' });
   const [matchRun, setMatchRun] = useState(null); // the inputs the current results were fetched for
@@ -577,6 +608,10 @@ function App() {
     if (selectedCentre || centresLoading) return;
     const origin = pendingCentreOriginRestoreRef.current;
     if (!origin) return;
+    if (normalizeCentreComparisonContext(origin)) {
+      pendingCentreOriginRestoreRef.current = null;
+      return;
+    }
     if (origin.page === 'Find my matches' && matchStatus === 'loading') return;
     const control = origin.focusCentreId
       ? document.querySelector(`[data-centre-id="${CSS.escape(String(origin.focusCentreId))}"]`)
@@ -635,7 +670,22 @@ function App() {
     setSelectedDistricts(Array.isArray(origin.districts) ? origin.districts : []);
     setLevel(origin.level || '');
     setPageOffset(Number(origin.pageOffset) || 0);
-    setCompareSelectedIds(Array.isArray(origin.compareSelectedIds) ? origin.compareSelectedIds : []);
+    const comparisonContext = normalizeCentreComparisonContext(origin);
+    if (comparisonContext) {
+      setCompareSelectedIds(comparisonContext.compareSelectedIds);
+      setCompareStep(comparisonContext.compareStep);
+      setCompareSelectionScrollY(comparisonContext.compareSelectionScrollY);
+      pendingComparisonScrollRef.current = { step: comparisonContext.compareStep, scrollY: comparisonContext.compareScrollY };
+      setCompareQuery(restoreCentreReturnQuery({ query: comparisonContext.compareQuery }, profile));
+      setCompareDistricts(comparisonContext.compareDistricts);
+      setCompareWatchlistOnly(comparisonContext.compareWatchlistOnly);
+    } else if (restoredPage === 'Compare centres') {
+      setCompareSelectedIds([]);
+      setCompareStep('selection');
+      setCompareQuery('');
+      setCompareDistricts([]);
+      setCompareWatchlistOnly(false);
+    }
     if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
       restoreMatchingOrigin(origin);
     }
@@ -654,7 +704,9 @@ function App() {
   useEffect(() => {
     if (!authResolved || !returnContextReady || centreReturnRestoredRef.current) return;
     if (currentUser && onboardingState.status === 'loading') return;
-    const context = loadCentreReturnContext(currentUser?.uid || null, window.history.state?.centreOriginId);
+    const historyState = window.history.state || {};
+    const contextId = historyState.centreOriginId || historyState.centreComparisonContextId;
+    const context = loadCentreReturnContext(currentUser?.uid || null, contextId);
     if (!context) {
       centreReturnRestoredRef.current = true;
       return;
@@ -668,8 +720,44 @@ function App() {
     }
     restoreCentreOriginState(context, restoredPage);
     centreReturnRestoredRef.current = true;
-    window.requestAnimationFrame(() => window.scrollTo(0, Math.max(0, Number(context.scrollY) || 0)));
+    const comparisonContext = normalizeCentreComparisonContext(context);
+    const scrollY = comparisonContext?.compareScrollY ?? (Number(context.scrollY) || 0);
+    if (comparisonContext) {
+      pendingComparisonScrollRef.current = { step: comparisonContext.compareStep, scrollY };
+    } else {
+      window.requestAnimationFrame(() => window.scrollTo(0, Math.max(0, scrollY)));
+    }
   }, [authResolved, currentUser?.uid, onboardingState.status, profile, returnContextReady]);
+
+  useEffect(() => {
+    if (!authResolved || !returnContextReady || page !== 'Compare centres' || selectedCentre ||
+        centreIdFromPath(window.location.pathname) ||
+        !permittedCentreOriginPage({ page }, currentUser, onboardingState, profile)) return undefined;
+    const pendingScroll = pendingComparisonScrollRef.current;
+    const restorationPending = pendingScroll?.step === compareStep;
+    persistComparisonSnapshot(compareStep, restorationPending ? pendingScroll.scrollY : window.scrollY);
+    let timer = null;
+    const onScroll = () => {
+      if (pendingComparisonScrollRef.current?.step === compareStep) return;
+      if (compareStep === 'selection') setCompareSelectionScrollY(window.scrollY);
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => persistComparisonSnapshot(compareStep, window.scrollY), 120);
+    };
+    const onPageHide = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      if (activeAccountIdRef.current !== (currentUser?.uid || null)) return;
+      const pending = pendingComparisonScrollRef.current;
+      persistComparisonSnapshot(compareStep, pending?.step === compareStep ? pending.scrollY : window.scrollY);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('pagehide', onPageHide);
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [authResolved, returnContextReady, page, selectedCentre, currentUser?.uid, onboardingState.status,
+    profile, compareStep, compareQuery, compareDistricts, compareWatchlistOnly, compareSelectedIds, compareSelectionScrollY]);
 
   const controller = useMemo(() => {
     return createOnboardingController({
@@ -819,8 +907,17 @@ function App() {
       const previousIdentity = activeIdentityRef.current;
       if (previousIdentity !== nextIdentity) {
         activeIdentityRef.current = nextIdentity;
+        compareSelectionGenerationRef.current += 1;
+        compareIdentityRequestsRef.current.clear();
         setSaved([]);
         setCompareSelectedIds([]);
+        setCompareStep('selection');
+        setCompareSelectionScrollY(0);
+        pendingComparisonScrollRef.current = null;
+        setCompareQuery('');
+        setCompareDistricts([]);
+        setCompareWatchlistOnly(false);
+        setCompareIdentityStatus({});
         setMatchRun(null);
         setMatchCandidates([]);
         setRestoredMatchSnapshot(null);
@@ -834,6 +931,8 @@ function App() {
         if (previousIdentity !== undefined) {
           clearCentreReturnContext();
           centreReturnOriginRef.current = null;
+          pendingCentreOriginRestoreRef.current = null;
+          centreReturnRestoredRef.current = false;
           setSelectedCentre(null);
           setWatchlistEntries([]);
           setPage('Overview');
@@ -998,10 +1097,50 @@ function App() {
   };
 
   const pushHistoryEntry = (state, path) => {
+    window.history.scrollRestoration = 'manual';
     const index = ensureHistoryEntryIndex() + 1;
     window.history.pushState({ ...state, centreHistoryIndex: index }, '', path);
     historyEntryIndexRef.current = index;
     return index;
+  };
+
+  const comparisonReturnSnapshot = (step = compareStep, scrollY = window.scrollY, selectionScrollY = compareSelectionScrollY) => ({
+    version: 1,
+    uid: currentUser?.uid || null,
+    returnPath: window.location.pathname,
+    page: 'Compare centres',
+    compareStep: step,
+    compareQuery: protectCentreReturnQuery(compareQuery, profile),
+    compareDistricts: [...compareDistricts],
+    compareWatchlistOnly,
+    compareSelectedIds: [...compareSelectedIds],
+    compareScrollY: Math.max(0, Number(scrollY) || 0),
+    compareSelectionScrollY: Math.max(0, Number(step === 'selection' ? scrollY : selectionScrollY) || 0),
+  });
+
+  const persistComparisonSnapshot = (step = compareStep, scrollY = window.scrollY) => {
+    const id = saveCentreReturnContext({
+      ...comparisonReturnSnapshot(step, scrollY),
+      id: window.history.state?.centreComparisonContextId || undefined,
+    });
+    if (!id) return null;
+    const state = { ...(window.history.state || {}), centreComparisonContextId: id };
+    window.history.replaceState(state, '', window.location.href);
+    return id;
+  };
+
+  const transitionComparisonStep = (nextStep) => {
+    const currentScrollY = window.scrollY;
+    const selectionScrollY = compareStep === 'selection' ? currentScrollY : compareSelectionScrollY;
+    persistComparisonSnapshot(compareStep, currentScrollY);
+    const targetScrollY = nextStep === 'selection' ? selectionScrollY : 0;
+    const snapshot = comparisonReturnSnapshot(nextStep, targetScrollY, selectionScrollY);
+    const id = saveCentreReturnContext(snapshot);
+    if (id) pushHistoryEntry({ centreComparisonContextId: id }, window.location.pathname);
+    compareSelectionGenerationRef.current += 1;
+    setCompareSelectionScrollY(selectionScrollY);
+    setCompareStep(nextStep);
+    pendingComparisonScrollRef.current = { step: nextStep, scrollY: targetScrollY };
   };
 
   // Centres hearted before the backend watchlist existed (or while it was unreachable) only
@@ -1091,6 +1230,12 @@ function App() {
           level,
           pageOffset,
           compareSelectedIds,
+          compareStep: page === 'Compare centres' ? compareStep : undefined,
+          compareQuery: page === 'Compare centres' ? protectCentreReturnQuery(compareQuery, profile) : undefined,
+          compareDistricts: page === 'Compare centres' ? compareDistricts : undefined,
+          compareWatchlistOnly: page === 'Compare centres' ? compareWatchlistOnly : undefined,
+          compareScrollY: page === 'Compare centres' ? window.scrollY : undefined,
+          compareSelectionScrollY: page === 'Compare centres' ? compareSelectionScrollY : undefined,
           matchSnapshot: page === 'Find my matches' ? ranked.map(({ id, score, fee, vf, cf, tf, vacancyLabel, locationLabel }) => ({ id: String(id), score, fee, vf, cf, tf, vacancyLabel, locationLabel })) : null,
           matchControls: page === 'Find my matches' ? { budget: Number(budget), weights: { ...weights } } : null,
           scrollY: window.scrollY,
@@ -1234,12 +1379,16 @@ function App() {
       const centreId = centreIdFromPath(window.location.pathname);
       if (!authResolved || centresLoading || (!currentUser && guestPreviewStatus === 'loading')) return;
       if (!centreId) {
+        const historyState = window.history.state || {};
+        const hasComparisonReference = Boolean(historyState.centreComparisonContextId);
         const origin = returnContextReady
-          ? loadCentreReturnContext(currentUser?.uid || null, window.history.state?.centreOriginId)
+          ? loadCentreReturnContext(currentUser?.uid || null,
+            historyState.centreOriginId || historyState.centreComparisonContextId)
           : null;
-        if (origin) pendingCentreOriginRestoreRef.current = origin;
+        const comparisonContext = normalizeCentreComparisonContext(origin);
+        if (origin && (!hasComparisonReference || comparisonContext)) pendingCentreOriginRestoreRef.current = origin;
         setSelectedCentre(null);
-        if (origin) {
+        if (origin && (!hasComparisonReference || comparisonContext)) {
           centreReturnOriginRef.current = origin;
           const restoredPage = permittedCentreOriginPage(origin, currentUser, onboardingState, profile);
           if (!restoredPage) {
@@ -1247,6 +1396,12 @@ function App() {
             return;
           }
           restoreCentreOriginState(origin, restoredPage);
+        } else if (hasComparisonReference) {
+          centreReturnOriginRef.current = null;
+          pendingCentreOriginRestoreRef.current = null;
+          setCompareSelectedIds([]);
+          setCompareStep('selection');
+          setPage('Overview');
         }
         return;
       }
@@ -1421,6 +1576,7 @@ function App() {
       invalidateCentreDetailRequests();
       setSelectedCentre(null);
     }
+    if (nextPage === 'Compare centres') setCompareStep('selection');
     setPage(nextPage);
     setMobileOpen(false);
   };
@@ -1570,13 +1726,6 @@ function App() {
     );
   } catch (error) {
     console.warn('Could not save watchlist locally:', error);
-  }
-
-  // Remove from comparison when a centre is unsaved.
-  if (wasSaved) {
-    setCompareSelectedIds((items) =>
-      items.filter((item) => item !== String(centreId))
-    );
   }
 
   notify(
@@ -1920,6 +2069,40 @@ function App() {
     return map;
   }, [centres, watchlistEntries, fetchedCentres]);
 
+  useEffect(() => {
+    const pending = pendingComparisonScrollRef.current;
+    if (!pending || page !== 'Compare centres' || compareStep !== pending.step) return undefined;
+    if (compareStep === 'selection') {
+      if (compareDirectoryStatus === 'loading' || compareDirectoryStatus === 'idle') return undefined;
+      const identitiesReady = compareSelectedIds.every((id) => centreLookup.has(String(id)) || compareIdentityStatus[String(id)] === 'error');
+      if (!identitiesReady) return undefined;
+    }
+    let frame = 0;
+    const expectedOptionCount = compareWatchlistOnly
+      ? compareDirectoryCentres.filter((centre) => saved.map(String).includes(String(centre.id))).length
+      : compareDirectoryCentres.length;
+    const restoreWhenReady = () => {
+      if (pendingComparisonScrollRef.current !== pending) return;
+      const renderedOptions = document.querySelectorAll('.compare-picker .compare-option').length;
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const rowsNeedLayout = compareStep === 'selection' && expectedOptionCount > 0 &&
+        (renderedOptions < expectedOptionCount || maxScroll < pending.scrollY);
+      if (rowsNeedLayout) {
+        frame = window.requestAnimationFrame(restoreWhenReady);
+        return;
+      }
+      window.scrollTo(0, Math.min(Math.max(0, pending.scrollY), maxScroll));
+      pendingComparisonScrollRef.current = null;
+    };
+    frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(restoreWhenReady);
+    });
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [page, compareStep, compareDirectoryStatus, compareSelectedIds, compareIdentityStatus, centreLookup,
+    compareDirectoryCentres, saved, compareWatchlistOnly]);
+
   // Make sure every saved centre can be shown, even if it isn't on the current page/search.
   useEffect(() => {
     const missing = saved
@@ -1940,33 +2123,165 @@ function App() {
     });
   }, [saved, centreLookup]);
 
+  useEffect(() => {
+    if (!currentUser || page !== 'Compare centres') return undefined;
+    const accountId = String(currentUser.uid);
+    const selectionGeneration = compareSelectionGenerationRef.current;
+    const selected = compareSelectedIds.map(String);
+    const active = new Set(selected);
+    for (const id of compareIdentityRequestsRef.current.keys()) {
+      if (!active.has(id)) compareIdentityRequestsRef.current.delete(id);
+    }
+    const unresolved = selected.filter((id) => !centreLookup.has(id));
+    setCompareIdentityStatus((current) => Object.fromEntries(
+      Object.entries(current).filter(([id]) => unresolved.includes(id))
+    ));
+    unresolved.forEach((id) => {
+      const existing = compareIdentityRequestsRef.current.get(id);
+      if (existing?.accountId === accountId && existing.selectionGeneration === selectionGeneration) return;
+      const request = { accountId, selectionGeneration, token: Symbol(id) };
+      compareIdentityRequestsRef.current.set(id, request);
+      setCompareIdentityStatus((current) => ({ ...current, [id]: 'loading' }));
+      getCentreById(id).then((detail) => {
+        if (compareIdentityRequestsRef.current.get(id) !== request ||
+            activeAccountIdRef.current !== accountId ||
+            compareSelectionGenerationRef.current !== selectionGeneration) return;
+        if (!detail) throw new Error('Centre details were empty.');
+        setFetchedCentres((current) => ({ ...current, [id]: mapCentre({ ...detail, id }) }));
+        setCompareIdentityStatus((current) => {
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
+        compareIdentityRequestsRef.current.delete(id);
+      }).catch(() => {
+        if (compareIdentityRequestsRef.current.get(id) !== request ||
+            activeAccountIdRef.current !== accountId ||
+            compareSelectionGenerationRef.current !== selectionGeneration) return;
+        compareIdentityRequestsRef.current.delete(id);
+        setCompareIdentityStatus((current) => ({ ...current, [id]: 'error' }));
+      });
+    });
+    return undefined;
+  }, [currentUser?.uid, page, compareSelectedIds, centreLookup, compareIdentityReload]);
+
   const watchlistCentres = useMemo(
     () => saved.map((id) => centreLookup.get(String(id))).filter(Boolean),
     [saved, centreLookup]
   );
 
-  // The Compare page only offers centres from the user's watchlist.
-  const compareOptions = watchlistCentres;
+  // Load the complete accessible directory for comparison. Search/filtering stays server-side,
+  // and each returned page is accumulated so selections remain identifiable when hidden.
+  useEffect(() => {
+    if (page !== 'Compare centres') return undefined;
+    let cancelled = false;
+    const run = async () => {
+      setCompareDirectoryStatus('loading');
+      setCompareDirectoryError('');
+      const term = compareQuery.trim();
+      const params = { limit: 100, offset: 0 };
+      if (term) {
+        if (/^\d+$/.test(term)) params.postal_prefix = term;
+        else params.query = term;
+      }
+      if (compareDistricts.length) params.district = compareDistricts;
+      try {
+        const first = await getCentres(params);
+        const firstItems = Array.isArray(first) ? first : first?.items;
+        if (!Array.isArray(firstItems)) throw new Error('Unexpected directory response.');
+        const total = Number(first?.total ?? firstItems.length);
+        const all = [...firstItems];
+        for (let offset = 100; offset < total; offset += 100) {
+          const next = await getCentres({ ...params, offset });
+          const items = Array.isArray(next) ? next : next?.items;
+          if (!Array.isArray(items)) throw new Error('Unexpected directory response.');
+          all.push(...items);
+        }
+        if (!cancelled) {
+          const mapped = all.map(mapCentre);
+          setCompareDirectoryCentres(mapped);
+          setFetchedCentres((current) => ({
+            ...current,
+            ...Object.fromEntries(mapped.map((centre) => [String(centre.id), centre])),
+          }));
+          setCompareDirectoryStatus('ready');
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCompareDirectoryError(error.message || 'Could not load centres.');
+          setCompareDirectoryStatus('error');
+        }
+      }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [page, compareQuery, compareDistricts, compareDirectoryReload]);
 
-  // Centres the user ticked for comparison (max 3).
+  const compareOptions = useMemo(() => compareWatchlistOnly
+    ? compareDirectoryCentres.filter((centre) => saved.map(String).includes(String(centre.id)))
+    : compareDirectoryCentres,
+  [compareDirectoryCentres, compareWatchlistOnly, saved]);
+
+  // Centres the user ticked for comparison (max 3), independent of current search results.
   const compareCentres = useMemo(
     () => compareSelectedIds.map((id) => centreLookup.get(String(id))).filter(Boolean).slice(0, 3),
     [compareSelectedIds, centreLookup]
   );
 
-  // Fetch the full profile (transport, fees, vacancies) of each selected centre.
+  const retryCompareDetails = (centreId) => {
+    const key = String(centreId);
+    setCompareDetails((current) => ({ ...current, [key]: { error: 'Retrying centre details…' } }));
+    setCompareDetailRetries((current) => ({ ...current, [key]: (current[key] || 0) + 1 }));
+  };
+
+  const removeComparedCentre = (centreId) => {
+    const next = compareSelectedIds.filter((id) => String(id) !== String(centreId));
+    setCompareSelectedIds(next);
+    if (next.length < 2) {
+      setCompareStep('selection');
+      window.scrollTo(0, 0);
+    }
+  };
+
+  // Fetch each selected centre independently so a failure in one column cannot block another.
   useEffect(() => {
+    if (page !== 'Compare centres' || compareStep !== 'comparison') return;
+    if (!authResolved || (currentUser?.uid || null) !== activeAccountIdRef.current) return;
+    const accountId = activeAccountIdRef.current;
+    const selectionKey = compareDetailSelectionKeyRef.current;
+    const selectionGeneration = compareDetailSelectionGenerationRef.current;
     compareCentres.forEach((centre) => {
       const key = String(centre.id);
-      if (compareDetails[key]) return;
-      setCompareDetails((current) => (current[key] ? current : { ...current, [key]: { loading: true } }));
+      const retry = compareDetailRetries[key] || 0;
+      const previous = compareDetails[key];
+      if (previous?.data && previous.accountId === accountId) return;
+      if (previous?.error && previous.accountId === accountId && previous.retry === retry) return;
+      if (previous?.loading && previous.accountId === accountId && previous.retry === retry && previous.selectionGeneration === selectionGeneration) return;
+
+      const requestId = ++compareDetailRequestRef.current;
+      setCompareDetails((current) => ({
+        ...current,
+        [key]: { loading: true, accountId, retry, selectionGeneration, requestId }
+      }));
 
       const request = centre.centre_code ? getCentreByCode(centre.centre_code) : getCentreById(centre.id);
       request
-        .then((detail) => setCompareDetails((current) => ({ ...current, [key]: { data: detail } })))
-        .catch((error) => setCompareDetails((current) => ({ ...current, [key]: { error: error.message } })));
+        .then((detail) => {
+          if (activeAccountIdRef.current !== accountId || compareDetailSelectionGenerationRef.current !== selectionGeneration || compareDetailSelectionKeyRef.current !== selectionKey) return;
+          if (!compareSelectedIds.some((id) => String(id) === key)) return;
+          setCompareDetails((current) => current[key]?.requestId === requestId
+            ? { ...current, [key]: { data: detail, accountId } }
+            : current);
+        })
+        .catch((error) => {
+          if (activeAccountIdRef.current !== accountId || compareDetailSelectionGenerationRef.current !== selectionGeneration || compareDetailSelectionKeyRef.current !== selectionKey) return;
+          if (!compareSelectedIds.some((id) => String(id) === key)) return;
+          setCompareDetails((current) => current[key]?.requestId === requestId
+            ? { ...current, [key]: { error: error?.message || 'Could not load centre details.', accountId, retry } }
+            : current);
+        });
     });
-  }, [compareCentres]);
+  }, [page, compareStep, authResolved, currentUser?.uid, compareCentres, compareSelectedIds, compareDetails, compareDetailRetries]);
 
   const resetFilters = () => {
     setQuery('');
@@ -2659,48 +2974,38 @@ function App() {
                     />
                   )}
 
-                  {matchStatus === 'done' && ranked.slice(0, 10).map((centre, index) => (
-                    <article className="panel centre-card" key={centre.id} style={{ marginBottom: 16 }}>
-                      <div className="centre-card-top">
-                        <span className="eyebrow">#{index + 1} · {centre.score}% match</span>
-                        <button
-                          className="icon-btn"
-                          aria-label={isSaved(centre.id) ? 'Remove from watchlist' : 'Save to watchlist'}
-                          onClick={() => toggleSaved(centre.id)}
-                        >
-                          <Heart
-                            size={18}
-                            fill={isSaved(centre.id) ? '#e63946' : 'none'}
-                            color={isSaved(centre.id) ? '#e63946' : '#9ca3af'}
-                          />
-                        </button>
-                      </div>
-
-                      <h3>{centre.name}</h3>
-                      <p><MapPin size={14} /> {centre.address || 'Address not provided'}</p>
-
-                      <p>
-                        <strong>{money(centre.fee)}</strong> / month ({levelLabel(matchRun.level)},{' '}
-                        {matchRun.citizenship}, before subsidy)<br />
-                        Vacancy: {centre.vacancyLabel}<br />
-                        Travel: {centre.locationLabel}
-                      </p>
-
-                      <p className="fine-print">
-                        Vacancy {centre.vf}% · Cost {centre.cf}% · Travel {centre.tf}%
-                      </p>
-
-                      <div className="centre-tags">
-                        {centre.spark_certified && <span>SPARK certified</span>}
-                        {centre.gov_subsidy && <span>Government subsidy</span>}
-                        {centre.transport_provided && <span>Transport</span>}
-                      </div>
-
-                      <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
-                        View details
-                      </button>
-                    </article>
-                  ))}
+                  {matchStatus === 'done' && ranked.length > 0 && (
+                    <MatchesCommute centres={ranked.slice(0, 10)} currentUser={currentUser} profileId={profileId}
+                      profile={profile} onSignIn={() => setAuthMode('login')}>
+                      {(commuteFor) => ranked.slice(0, 10).map((centre, index) => {
+                        const commute = commuteFor(centre);
+                        return <article className="panel centre-card" key={centre.id} style={{ marginBottom: 16 }}>
+                          <div className="centre-card-top">
+                            <span className="eyebrow">#{index + 1} · {centre.score}% match</span>
+                            <button className="icon-btn" aria-label={isSaved(centre.id) ? 'Remove from watchlist' : 'Save to watchlist'} onClick={() => toggleSaved(centre.id)}>
+                              <Heart size={18} fill={isSaved(centre.id) ? '#e63946' : 'none'} color={isSaved(centre.id) ? '#e63946' : '#9ca3af'} />
+                            </button>
+                          </div>
+                          <h3>{centre.name}</h3>
+                          <p><MapPin size={14} /> {centre.address || 'Address not provided'}</p>
+                          <p>
+                            <strong>{money(centre.fee)}</strong> / month ({levelLabel(matchRun.level)},{' '}
+                            {matchRun.citizenship}, before subsidy)<br />
+                            Vacancy: {centre.vacancyLabel}
+                          </p>
+                          <MatchCommuteSummary centre={centre} summary={commute.summary} error={commute.errors}
+                            loading={commute.loading} workplaceConfigured={Boolean(profile?.work)} onRetry={commute.retry} />
+                          <p className="fine-print">Vacancy {centre.vf}% · Cost {centre.cf}% · Travel {centre.tf}%</p>
+                          <div className="centre-tags">
+                            {centre.spark_certified && <span>SPARK certified</span>}
+                            {centre.gov_subsidy && <span>Government subsidy</span>}
+                            {centre.transport_provided && <span>Transport</span>}
+                          </div>
+                          <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>View details</button>
+                        </article>;
+                      })}
+                    </MatchesCommute>
+                  )}
                 </section>
               </div>
             </>
@@ -2795,190 +3100,89 @@ function App() {
 
           {page === 'Compare centres' && (
             <>
-              <PageTitle
-                eyebrow="SIDE-BY-SIDE VIEW"
-                title="Compare centres"
-                subtitle="Pick up to 3 centres from your watchlist to compare side by side."
-              />
+              {compareStep === 'selection' ? (
+                <>
+                  <PageTitle title="Choose centres" subtitle="Search the full directory, then select two or three centres to compare." />
+                  <section className="panel compare-picker">
+                    <label className="compare-search-label" htmlFor="compare-search">Search centres</label>
+                    <input
+                      id="compare-search"
+                      className="compare-search"
+                      type="search"
+                      value={compareQuery}
+                      onChange={(event) => setCompareQuery(event.target.value)}
+                      placeholder="Centre name or postal code"
+                    />
+                    <div className="compare-area-filter">
+                      <span>Area</span>
+                      <DistrictMultiSelect districts={districts} selected={compareDistricts} onChange={setCompareDistricts} />
+                    </div>
+                    <div className="compare-picker-toolbar">
+                      <label className="compare-filter">
+                        <input type="checkbox" checked={compareWatchlistOnly} onChange={(event) => setCompareWatchlistOnly(event.target.checked)} />
+                        <span>Watchlist only</span>
+                      </label>
+                      <button className="text-btn" onClick={() => setCompareSelectedIds([])} disabled={!compareSelectedIds.length}>Clear selection</button>
+                    </div>
+                    <div className="compare-selection-summary" aria-live="polite">
+                      <div><strong>{compareSelectedIds.length} of 3 selected</strong><span>{compareCentres.map((centre) => centre.name).join(' · ') || 'Choose at least two centres.'}</span></div>
+                      <button className="primary-btn" disabled={compareSelectedIds.length < 2 || compareSelectedIds.length > 3} onClick={() => transitionComparisonStep('comparison')}>Compare</button>
+                    </div>
+                    <CompareIdentityStatus selectedIds={compareSelectedIds} centreLookup={centreLookup}
+                      statusById={compareIdentityStatus} onRetry={() => setCompareIdentityReload((value) => value + 1)} />
 
-              <section className="panel" style={{ padding: 20, marginBottom: 24 }}>
+                    {compareDirectoryStatus === 'loading' && <p role="status" className="compare-picker-state">Loading centres…</p>}
+                    {compareDirectoryStatus === 'error' && <div className="compare-picker-state" role="alert"><p>Could not load centres: {compareDirectoryError}</p><button className="secondary-btn" onClick={() => setCompareDirectoryReload((value) => value + 1)}>Try again</button></div>}
+                    {compareDirectoryStatus === 'ready' && compareOptions.length === 0 && <p className="compare-picker-state">{compareWatchlistOnly ? 'No watchlist centres match. Clear Watchlist only to search the full directory.' : 'No centres found. Try another name, area or postal code.'}</p>}
+                    {compareDirectoryStatus === 'ready' && compareOptions.length > 0 && (
+                      <div className="compare-option-list" aria-label="Centres">
+                        {compareOptions.map((centre) => {
+                          const id = String(centre.id);
+                          const checked = compareSelectedIds.includes(id);
+                          const limitReached = !checked && compareSelectedIds.length >= 3;
+                          return <label key={id} className={`compare-option${checked ? ' selected' : ''}`}>
+                            <input type="checkbox" checked={checked} disabled={limitReached} aria-label={`Select ${centre.name}`} onChange={() => setCompareSelectedIds((items) => checked ? items.filter((item) => item !== id) : items.length < 3 && !items.includes(id) ? [...items, id] : items)} />
+                            <span><strong>{centre.name}</strong><small>{centre.address || 'Address not provided'}{centre.postal ? ` · ${centre.postal}` : ''}</small></span>
+                          </label>;
+                        })}
+                      </div>
+                    )}
+                  </section>
+                </>
+              ) : (
+                <>
+                  <PageTitle title="Compare centres" subtitle="Review the centres you selected side by side." />
+                  <button className="secondary-btn compare-edit" onClick={() => transitionComparisonStep('selection')}>Edit selection</button>
+                  <CompareIdentityStatus selectedIds={compareSelectedIds} centreLookup={centreLookup}
+                    statusById={compareIdentityStatus} onRetry={() => setCompareIdentityReload((value) => value + 1)} />
+                </>
+              )}
+
+              {compareStep === 'comparison' && <section>
                 <div className="results-top">
                   <div>
-                    <h2>1. Choose from your watchlist</h2>
-                    <p>{compareSelectedIds.length} of 3 centres selected</p>
-                  </div>
-
-                  <button
-                    className="text-btn"
-                    onClick={() => setCompareSelectedIds([])}
-                    disabled={compareSelectedIds.length === 0}
-                  >
-                    Clear selection
-                  </button>
-                </div>
-
-                {compareOptions.length === 0 ? (
-                  <Empty
-                    title="Your watchlist is empty"
-                    text="Save centres to your watchlist first, then choose up to 3 of them here to compare."
-                    action={() => openPage('Preschool directory')}
-                  />
-                ) : (
-                  <div className="form-grid">
-                    {compareOptions.map((centre) => {
-                      const id = String(centre.id);
-                      const checked = compareSelectedIds.includes(id);
-
-                      return (
-                        <label
-                          key={id}
-                          className="panel"
-                          style={{
-                            display: 'flex',
-                            gap: 12,
-                            alignItems: 'flex-start',
-                            padding: 14,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => {
-                              if (checked) {
-                                setCompareSelectedIds((items) => items.filter((item) => item !== id));
-                              } else if (compareSelectedIds.length < 3) {
-                                setCompareSelectedIds((items) => [...items, id]);
-                              } else {
-                                notify('You can compare a maximum of 3 centres.');
-                              }
-                            }}
-                          />
-
-                          <span>
-                            <strong>{centre.name}</strong>
-                            <br />
-                            <small>{centre.address || 'Address not provided'}</small>
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-
-              <section>
-                <div className="results-top">
-                  <div>
-                    <h2>2. Compare side by side</h2>
-                    <p>Select at least 2 centres above to compare their details.</p>
+                    <h2>Selected centre details</h2>
+                    <p>Travel estimates and published information for your selected centres.</p>
                   </div>
                 </div>
 
-                {compareCentres.length === 0 ? (
-                  <Empty
-                    title="Choose your centres"
-                    text="Select one or more centres above. Their details will appear here."
-                  />
-                ) : (
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: `repeat(${compareCentres.length}, minmax(240px, 1fr))`,
-                      gap: 16,
-                      overflowX: 'auto',
-                      alignItems: 'start'
-                    }}
-                  >
-                    {compareCentres.map((listCentre) => {
-                      const entry = compareDetails[String(listCentre.id)] || {};
-                      const detail = entry.data;
-                      const centre = detail ? { ...listCentre, ...detail, id: listCentre.id, name: listCentre.name } : listCentre;
-                      const services = detail?.services ?? [];
-                      const vacancies = detail?.vacancies ?? [];
-                      const fees = services.map((item) => Number(item.fee)).filter(Number.isFinite);
-                      return (
-                      <article className="panel" key={centre.id} style={{ padding: 20 }}>
-                        <h3>{centre.name}</h3>
-                        <p>{centre.address || 'Address not provided'}</p>
-
-                        <hr />
-
-                        <p><strong>Centre code</strong><br />{centre.centre_code || 'Not provided'}</p>
-                        <p><strong>Contact</strong><br />{centre.contact || 'Not provided'}</p>
-                        <p><strong>Email</strong><br />{centre.email || 'Not provided'}</p>
-                        <p>
-                          <strong>Website</strong><br />
-                          {centre.website_url ? (
-                            <a href={websiteHref(centre.website_url)} target="_blank" rel="noreferrer">
-                              Visit website
-                            </a>
-                          ) : 'Not provided'}
-                        </p>
-                        <p><strong>SPARK certified</strong><br />{yesNo(centre.spark_certified)}</p>
-                        <p><strong>Government subsidy</strong><br />{yesNo(centre.gov_subsidy)}</p>
-                        <p>
-                          <strong>Transport provided</strong><br />
-                          {entry.loading ? 'Loading…' : yesNo(centre.transport_provided)}
-                        </p>
-                        <p>
-                          <strong>Extended hours</strong><br />
-                          {yesNo(centre.extended_operating_hours)}
-                        </p>
-                        <p><strong>Weekday hours</strong><br />{centre.weekday_full_day_hours || 'Not provided'}</p>
-                        <p><strong>Saturday hours</strong><br />{centre.saturday_hours || 'Not provided'}</p>
-                        <p>
-                          <strong>Monthly fees</strong><br />
-                          {entry.loading
-                            ? 'Loading…'
-                            : fees.length
-                              ? `${money(Math.min(...fees))}${Math.min(...fees) === Math.max(...fees) ? '' : ` – ${money(Math.max(...fees))}`}`
-                              : 'Fee data unavailable'}
-                        </p>
-                        {services.length > 0 && (
-                          <div style={{ maxHeight: 160, overflowY: 'auto', fontSize: 13, marginBottom: 12 }}>
-                            {services.map((item) => (
-                              <div key={item.service_id ?? `${item.level}-${item.citizenship_type}-${item.type_of_service}`}>
-                                {levelLabel(item.level)} · {item.citizenship_type} · {money(item.fee)}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        <p>
-                          <strong>Vacancies</strong><br />
-                          {entry.loading ? 'Loading…' : vacancies.length ? '' : 'None listed'}
-                        </p>
-                        {vacancies.length > 0 && (
-                          <div style={{ maxHeight: 160, overflowY: 'auto', fontSize: 13, marginBottom: 12 }}>
-                            {vacancies.map((item, index) => (
-                              <div key={item.record_id ?? index}>
-                                {levelLabel(item.level_type)} · {monthYear(item.enrollment_month_year)} · {item.vacancy_status}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {entry.error && <p className="fine-print">Could not load full details: {entry.error}</p>}
-
-                        <button className="secondary-btn" data-centre-id={centre.id} onClick={() => openCentreDetails(centre)}>
-                          View full details
-                        </button>
-
-                        <button
-                          className="text-btn"
-                          onClick={() =>
-                            setCompareSelectedIds((items) =>
-                              items.filter((id) => id !== String(centre.id))
-                            )
-                          }
-                        >
-                          Remove from comparison
-                        </button>
-                      </article>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
+                {compareCentres.length === 0 && <Empty
+                  title="Choose your centres"
+                  text="Select two or more centres above. Selected centre identities are still loading or need recovery."
+                />}
+                <ComparisonCommuteTable
+                  selectedIds={compareSelectedIds}
+                  centres={compareCentres}
+                  details={compareDetails}
+                  profile={profile}
+                  profileId={profileId}
+                  currentUser={currentUser}
+                  onSignIn={() => setAuthMode('login')}
+                  onRetryDetails={retryCompareDetails}
+                  onViewDetails={openCentreDetails}
+                  onRemove={removeComparedCentre}
+                />
+              </section>}
             </>
           )}
 
@@ -3223,7 +3427,7 @@ function App() {
                         currentUser={currentUser}
                         profileId={profileId}
                         workplaceConfigured={profile ? Boolean(profile.work) : undefined}
-                        profileLocationKey={`${profile?.home || ''}:${profile?.work || ''}`}
+                        profileLocationKey={getProfileCommuteContextKey(profile, profileId)}
                         onSignIn={() => setAuthMode('login')}
                         onEditProfile={() => openPage('Family profile')}
                       />

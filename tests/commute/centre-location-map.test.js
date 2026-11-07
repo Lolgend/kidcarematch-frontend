@@ -22,17 +22,23 @@ vi.mock("react-leaflet", () => ({
       "data-url": url,
       "data-attribution": attribution,
     }),
-  Marker: ({ children, position }) =>
+  Marker: ({ children, position, icon, title, alt }) =>
     React.createElement(
       "div",
       {
         "data-testid": "mock-marker",
         "data-position": JSON.stringify(position),
+        "data-icon-html": icon?.options?.html,
+        title,
+        "aria-label": alt,
       },
       children
     ),
   Popup: ({ children }) =>
     React.createElement("div", { "data-testid": "mock-popup" }, children),
+}));
+vi.mock("leaflet", () => ({
+  divIcon: (options) => ({ options }),
 }));
 vi.mock("leaflet/dist/leaflet.css", () => ({}));
 
@@ -90,6 +96,10 @@ describe("CentreLocationMap presentation", () => {
     expect(html).toContain('data-url="https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png"');
     expect(html).toContain('data-testid="mock-marker"');
     expect(html).toContain('data-position="[1.3521,103.8198]"');
+    expect(html).toContain('title="Centre"');
+    expect(html).toContain('aria-label="Centre"');
+    expect(html).toContain("map-anchor-centre");
+    expect(html).toContain("map-anchor-label");
     expect(html).toContain("Little Stars Childcare");
   });
 

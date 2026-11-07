@@ -7,6 +7,7 @@ import {
   setSessionSamplePair,
   resetSessionMode,
   resetRetainedSessionMode,
+  getProfileCommuteContextKey,
 } from "../../src/commute/commuteSession.js";
 
 describe("createCommuteSession controller", () => {
@@ -64,6 +65,15 @@ describe("createCommuteSession controller", () => {
     };
   };
 
+  it("binds commute context to a saved revision or a stable profile snapshot", () => {
+    const first = { home: "123456", work: "234567", level: "n1", revision: "r1" };
+    expect(getProfileCommuteContextKey(first, "profile-1")).toBe(getProfileCommuteContextKey({ ...first }, "profile-1"));
+    expect(getProfileCommuteContextKey(first, "profile-1")).not.toBe(getProfileCommuteContextKey({ ...first, revision: "r2" }, "profile-1"));
+    const noRevision = { home: "123456", work: null, level: "n1" };
+    expect(getProfileCommuteContextKey(noRevision, "profile-1")).toBe(getProfileCommuteContextKey({ level: "n1", work: null, home: "123456" }, "profile-1"));
+    expect(getProfileCommuteContextKey(noRevision, "profile-1")).not.toBe(getProfileCommuteContextKey({ ...noRevision, level: "k1" }, "profile-1"));
+  });
+
   beforeEach(() => {
     session?.destroy();
     resetRetainedSessionMode();
@@ -98,6 +108,76 @@ describe("createCommuteSession controller", () => {
     expect(latest.loading).toBe(false);
     expect(latest.data.centre_id).toBe(101);
     expect(latest.error).toBe(null);
+  });
+
+  it("loads one shared commute set for the active matches in each selected mode", async () => {
+    session = createCommuteSession({
+      loadCommute,
+      comparisonCentreIds: [101, 202],
+      onState: (s) => states.push(s),
+    });
+    await session.open({ centreId: 101, profileId: "prof-1", locationKey: "home-r1" });
+    expect(loadCommute.mock.calls.map(([id, options]) => [String(id), options.mode])).toEqual([
+      ["101", "drive"], ["202", "drive"],
+    ]);
+    expect(Object.keys(session.getState().setData).sort()).toEqual(["101", "202"]);
+
+    loadCommute.mockClear();
+    await session.setMode("walk");
+    expect(loadCommute.mock.calls.map(([id, options]) => [String(id), options.mode])).toEqual([
+      ["101", "walk"], ["202", "walk"],
+    ]);
+    expect(Object.keys(session.getState().setData).sort()).toEqual(["101", "202"]);
+  });
+
+  it("retains usable sibling estimates when one centre fails and clears the entire private set on endpoint authorization failure", async () => {
+    const loadSet = vi.fn(async (centreId) => {
+      if (String(centreId) === "202") throw Object.assign(new Error("503: unavailable"), { status: 503 });
+      return mockCommute(centreId);
+    });
+    session = createCommuteSession({ loadCommute: loadSet, comparisonCentreIds: [101, 202], onState: (s) => states.push(s) });
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(session.getState().setData["101"]).toBeTruthy();
+    expect(session.getState().setData["202"]).toBeUndefined();
+    expect(session.getState().setErrors["202"].status).toBe(503);
+
+    loadSet.mockImplementation(async (centreId) => {
+      if (String(centreId) === "202") throw Object.assign(new Error("403: denied"), { status: 403 });
+      return mockCommute(centreId);
+    });
+    await session.retry();
+    expect(session.getState().setData).toEqual({});
+    expect(session.getState().error.status).toBe(403);
+  });
+
+  it("keeps successful sibling estimates when the primary centre request fails", async () => {
+    const loadSet = vi.fn(async (centreId) => {
+      if (String(centreId) === "101") throw Object.assign(new Error("503: primary unavailable"), { status: 503 });
+      return mockCommute(centreId);
+    });
+    session = createCommuteSession({ loadCommute: loadSet, comparisonCentreIds: [101, 202], onState: (s) => states.push(s) });
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(session.getState().data).toBeNull();
+    expect(session.getState().setData["202"].centre_id).toBe(202);
+    expect(session.getState().setErrors["101"].status).toBe(503);
+  });
+
+  it("retains route facts but marks the active multi-centre set incomparable when conditions differ", async () => {
+    const loadSet = vi.fn(async (centreId) => {
+      const response = mockCommute(centreId);
+      return {
+        ...response,
+        evaluation: { profile_revision: "profile-r1" },
+        samples: [{ ...response.samples[0], conditions: {
+          conditions_id: String(centreId) === "101" ? "conditions-a" : "conditions-b",
+          provider_options_id: "options-v1", timing_basis: "provider_default", initial_departure_at: null,
+        } }],
+      };
+    });
+    session = createCommuteSession({ loadCommute: loadSet, comparisonCentreIds: [101, 202], onState: (s) => states.push(s) });
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(Object.keys(session.getState().setData).sort()).toEqual(["101", "202"]);
+    expect(session.getState().comparisonCompatible).toBe(false);
   });
 
   it("discovers the direct-baseline contract before opting in, without requiring sampling support", async () => {
@@ -1174,6 +1254,50 @@ describe("createCommuteSession controller", () => {
     expect(session.getState().data.samples[0].via_status).toBe("partial");
     expect(session.getState().data.samples[0].totals).toBe(null);
     expect(session.getState().data.samples[0].direct_route.status).toBe("available");
+  });
+
+  it("does not certify an incomplete selected-sample cohort while retaining usable centre facts", async () => {
+    loadCommute = vi.fn(async (id) => {
+      if (String(id) === "202") throw new Error("503: centre route unavailable");
+      return selectedCycleResponse(101, 0);
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      comparisonCentreIds: [101, 202],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(session.getState().setData["101"]).not.toBeUndefined();
+    expect(session.getState().comparisonSetComplete).toBe(false);
+    expect(session.getState().comparisonCompatible).toBe(false);
+  });
+
+  it("keeps a complete same-condition retained cohort comparable when one refresh fails", async () => {
+    let refresh = false;
+    loadCommute = vi.fn(async (id, request) => {
+      if (refresh && String(id) === "202") throw new Error("503: temporary refresh failure");
+      return selectedCycleResponse(id, request.sampling.sample_index);
+    });
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      comparisonCentreIds: [101, 202],
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    expect(session.getState().comparisonSetComplete).toBe(true);
+    refresh = true;
+    await session.open({ centreId: 101, profileId: "prof-1" });
+
+    expect(Object.keys(session.getState().setData).sort()).toEqual(["101", "202"]);
+    expect(session.getState().comparisonSetComplete).toBe(true);
+    expect(session.getState().comparisonCompatible).toBe(true);
   });
 
   it("rejects selected-set results with different provider options", async () => {

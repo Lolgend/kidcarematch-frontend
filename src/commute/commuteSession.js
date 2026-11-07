@@ -154,6 +154,44 @@ export const resetCommuteSessionMode = resetSessionMode;
 export const resetRetainedSessionMode = resetSessionMode;
 export const getRetainedSessionMode = getSessionMode;
 
+function sortProfileSnapshot(value) {
+  if (Array.isArray(value)) return value.map(sortProfileSnapshot);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortProfileSnapshot(value[key])]));
+}
+
+export function getProfileCommuteContextKey(profile, profileId) {
+  const revision = profile?.profile_revision || profile?.revision || profile?.updated_at || profile?.updatedAt || null;
+  return JSON.stringify({
+    profileId: profileId == null ? null : String(profileId),
+    revision,
+    profile: revision ? null : sortProfileSnapshot(profile || null),
+    home: profile?.home ?? profile?.home_postal_code ?? null,
+    workplace: profile?.work ?? profile?.workplace_postal_code ?? null,
+  });
+}
+
+function hasCompatibleSetConditions(evaluations, expectedCount) {
+  const responses = evaluations.filter(({ response }) => response).map(({ response }) => response);
+  if (responses.length !== expectedCount) return false;
+  const first = responses[0];
+  const firstSample = first?.samples?.find((sample) => sample?.kind === (first.mode === "pt" ? "weekday" : "single")) || first?.samples?.[0];
+  const firstConditions = firstSample?.conditions;
+  const firstRevision = first?.evaluation?.profile_revision;
+  if (!firstConditions?.conditions_id || !firstConditions?.provider_options_id || !firstRevision) return false;
+  return evaluations.every(({ id, response }) => {
+    const sample = response?.samples?.find((item) => item?.kind === (response.mode === "pt" ? "weekday" : "single")) || response?.samples?.[0];
+    const conditions = sample?.conditions;
+    return response && String(response.centre_id) === String(id) &&
+      String(response.profile_id) === String(first.profile_id) && response.mode === first.mode &&
+      response.evaluation?.profile_revision === firstRevision &&
+      conditions?.conditions_id === firstConditions.conditions_id &&
+      conditions?.provider_options_id === firstConditions.provider_options_id &&
+      conditions?.timing_basis === firstConditions.timing_basis &&
+      conditions?.initial_departure_at === firstConditions.initial_departure_at;
+  });
+}
+
 function hasValidCapabilityDocument(document) {
   if (!document || typeof document !== "object" || Array.isArray(document)) return false;
   const hasDirectMarker = Object.prototype.hasOwnProperty.call(document, "direct_baseline_contract") &&
@@ -189,6 +227,9 @@ export function createCommuteSession({
   let error = null;
   let data = null;
   let setData = {};
+  let setErrors = {};
+  let comparisonCompatible = true;
+  let comparisonSetComplete = true;
   let sampling = null;
   let directBaselineStatus = directBaselineEnabled ? "unknown" : "disabled";
   let directBaselineError = null;
@@ -241,6 +282,9 @@ export function createCommuteSession({
       error,
       data,
       setData,
+      setErrors,
+      comparisonCompatible,
+      comparisonSetComplete,
       sampling,
       directBaselineStatus,
       directBaselineError,
@@ -252,6 +296,9 @@ export function createCommuteSession({
       clearExpiryTimer();
       data = null;
       setData = {};
+      setErrors = {};
+      comparisonCompatible = true;
+      comparisonSetComplete = true;
       sampling = null;
     }
     if (activeController) {
@@ -263,6 +310,9 @@ export function createCommuteSession({
       loading = false;
       data = null;
       setData = {};
+      setErrors = {};
+      comparisonCompatible = true;
+      comparisonSetComplete = true;
       sampling = null;
       error = null;
       emit();
@@ -312,23 +362,47 @@ export function createCommuteSession({
           directBaselineStatus = includeDirectBaseline ? "supported" : "unsupported";
         }
       }
-      const response = await loadCommute(
-        centreId,
-        {
-          profileId,
-          mode,
-          samplePair,
-          ...(includeDirectBaseline ? { includeDirectBaseline: true } : {}),
-        },
-        { signal: controller.signal }
-      );
+      const requestIds = [...new Map((comparisonCentreIds || [centreId]).map((id) => [String(id), id])).values()];
+      if (!requestIds.some((id) => String(id) === String(centreId))) requestIds.unshift(centreId);
+      const requestOptions = {
+        profileId,
+        mode,
+        samplePair,
+        ...(includeDirectBaseline ? { includeDirectBaseline: true } : {}),
+      };
+      const evaluations = await Promise.all(requestIds.map(async (id) => {
+        try {
+          return { id, response: await loadCommute(id, requestOptions, { signal: controller.signal }) };
+        } catch (requestError) {
+          return { id, error: requestError };
+        }
+      }));
+      if (requestId !== activeRequestId || controller.signal.aborted) return;
+      const response = evaluations.find(({ id }) => String(id) === String(centreId))?.response;
+      const failed = evaluations.find(({ id, error: requestError }) => String(id) === String(centreId) && requestError)?.error;
+      const endpointAuthFailure = evaluations.find(({ error: requestError }) => isEndpointAuthorizationError(requestError))?.error;
+      if (endpointAuthFailure && requestIds.length > 1) {
+        data = null;
+        setData = {};
+        setErrors = {};
+        comparisonCompatible = true;
+        loading = false;
+        error = endpointAuthFailure;
+        emit();
+        return;
+      }
+      if (failed && requestIds.length === 1) throw failed;
+      const nextSetData = Object.fromEntries(evaluations.filter(({ response: item }) => item).map(({ id, response: item }) => [id, item]));
 
       if (requestId === activeRequestId) {
-        data = response;
-        setData = { [String(centreId)]: response };
+        setErrors = Object.fromEntries(evaluations.filter(({ error: requestError }) => requestError).map(({ id, error: requestError }) => [String(id), requestError]));
+        comparisonSetComplete = requestIds.length < 2 || evaluations.every(({ response: item }) => Boolean(item));
+        comparisonCompatible = comparisonSetComplete && (requestIds.length < 2 || hasCompatibleSetConditions(evaluations, requestIds.length));
+        data = response || null;
+        setData = nextSetData;
         sampling = null;
         loading = false;
-        error = null;
+        error = failed || null;
         if (response?.sample_pair) {
           samplePair = response.sample_pair;
           if (userId) {
@@ -701,6 +775,10 @@ export function createCommuteSession({
       for (const [id, response] of Object.entries(currentResponses)) {
         setData[id] = retainedSetData[id] ? retainSameConditionRoutes(retainedSetData[id], response) : response;
       }
+      const activeSetEvaluations = centreIds.map((id) => ({ id, response: setData[id] }));
+      comparisonSetComplete = centreIds.every((id) => Boolean(setData[id]));
+      comparisonCompatible = comparisonSetComplete && (centreIds.length < 2 ||
+        hasCompatibleSetConditions(activeSetEvaluations, centreIds.length));
       data = setData[String(centreId)] || null;
       loading = false;
       const failed = evaluations.find(({ error: err }) => err);
@@ -753,6 +831,9 @@ export function createCommuteSession({
         error,
         data,
         setData,
+        setErrors,
+        comparisonCompatible,
+        comparisonSetComplete,
         sampling,
         directBaselineStatus,
         directBaselineError,
@@ -768,6 +849,9 @@ export function createCommuteSession({
         clearExpiryTimer();
         data = null;
         setData = {};
+        setErrors = {};
+        comparisonCompatible = true;
+        comparisonSetComplete = true;
         sampling = null;
         error = null;
       }
@@ -781,6 +865,9 @@ export function createCommuteSession({
       setSessionMode(userId, newMode);
       data = null;
       setData = {};
+      setErrors = {};
+      comparisonCompatible = true;
+      comparisonSetComplete = true;
       sampling = null;
       error = null;
       if (centreId && profileId) {
@@ -823,6 +910,9 @@ export function createCommuteSession({
       error = null;
       data = null;
       setData = {};
+      setErrors = {};
+      comparisonCompatible = true;
+      comparisonSetComplete = true;
       sampling = null;
       emit();
     },
@@ -848,7 +938,10 @@ export function useCommuteSession({
   directBaselineEnabled = import.meta.env.VITE_COMMUTE_DIRECT_BASELINE_ENABLED === "true",
   initialMode,
   initialSamplePair,
+  comparisonCentreIds = null,
 }) {
+  const comparisonKey = comparisonCentreIds ? [...new Set(comparisonCentreIds.map(String))].join("|") : "";
+  const normalizedComparisonCentreIds = comparisonKey ? comparisonKey.split("|") : null;
   const currentMode = initialMode || getSessionMode(userId);
   const currentSamplePair = initialSamplePair || getSessionSamplePair(userId);
   const [state, setState] = useState({
@@ -862,6 +955,10 @@ export function useCommuteSession({
     loading: Boolean(centreId && profileId),
     error: null,
     data: null,
+    setData: {},
+    setErrors: {},
+    comparisonCompatible: true,
+    comparisonSetComplete: true,
     directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled",
     directBaselineError: null,
   });
@@ -883,17 +980,18 @@ export function useCommuteSession({
       initialMode: currentMode,
       initialSamplePair: currentSamplePair,
       userId,
+      comparisonCentreIds: normalizedComparisonCentreIds,
     });
-  if (!sessionRef.current) sessionRef.current = { userId, session: createSession() };
+  if (!sessionRef.current) sessionRef.current = { userId, comparisonKey, session: createSession() };
 
   useEffect(() => {
-    if (sessionRef.current.userId !== userId) {
+    if (sessionRef.current.userId !== userId || sessionRef.current.comparisonKey !== comparisonKey) {
       sessionRef.current.session.destroy();
-      sessionRef.current = { userId, session: createSession() };
+      sessionRef.current = { userId, comparisonKey, session: createSession() };
       setState({
         mode: getSessionMode(userId), selectedSample: 'weekday', selectedSampleKind: 'weekday',
         centreId, profileId, locationKey, samplePair: getSessionSamplePair(userId),
-        loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, sampling: null,
+        loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, setErrors: {}, comparisonCompatible: true, comparisonSetComplete: true, sampling: null,
         directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled", directBaselineError: null,
       });
     }
@@ -903,9 +1001,10 @@ export function useCommuteSession({
       // Don't fully reset mode across centre unmounts, but abort inflight requests
       session.destroy();
     };
-  }, [centreId, profileId, locationKey, userId]);
+  }, [centreId, profileId, locationKey, userId, comparisonKey]);
 
-  const visibleState = state.centreId === centreId && state.profileId === profileId && state.locationKey === locationKey && sessionRef.current.userId === userId
+  const visibleState = state.centreId === centreId && state.profileId === profileId && state.locationKey === locationKey &&
+    sessionRef.current.userId === userId && sessionRef.current.comparisonKey === comparisonKey
     ? state
     : {
       ...state,
@@ -914,7 +1013,7 @@ export function useCommuteSession({
       selectedSampleKind: sessionRef.current.userId === userId ? state.selectedSampleKind : 'weekday',
       samplePair: sessionRef.current.userId === userId ? state.samplePair : currentSamplePair,
       centreId, profileId, locationKey,
-      loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, sampling: null,
+      loading: Boolean(centreId && profileId), error: null, data: null, setData: {}, setErrors: {}, comparisonCompatible: true, comparisonSetComplete: true, sampling: null,
       directBaselineStatus: directBaselineEnabled ? "unknown" : "disabled", directBaselineError: null,
     };
 

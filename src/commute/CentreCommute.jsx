@@ -3,6 +3,7 @@ import { divIcon } from "leaflet";
 import { MapContainer, TileLayer, Marker, Popup, Polyline } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import CentreLocationMap from "./CentreLocationMap.jsx";
+import MapAnchorMarker from "./MapAnchorMarker.jsx";
 import { useCommuteSession } from "./commuteSession.js";
 import {
   getCentreCommute as defaultGetCentreCommute,
@@ -142,6 +143,115 @@ function isCertifiedComparison({ data, sample, mode, profileId, legs, expectedLe
     sameMetric(viaDistance, sample.totals.distance_meters);
 }
 
+/** Shared, fail-closed commute summary for matches, details and comparison. */
+export function summarizeCommute({ data, profileId, mode = "drive", directBaselineStatus = "disabled", workplaceConfigured, comparisonCompatible = true, comparisonSetComplete = true }) {
+  const samples = Array.isArray(data?.samples) ? data.samples.filter((item) => item && typeof item === "object") : [];
+  const sample = mode === "pt" ? samples.find((item) => item.kind === "weekday") || null : samples[0] || null;
+  const hasConfiguredWorkplace = workplaceConfigured ?? Boolean(
+    data?.anchors?.workplace || (Array.isArray(sample?.legs) && sample.legs.some((leg) => leg?.to_anchor === "workplace"))
+  );
+  const legs = (Array.isArray(sample?.legs) ? sample.legs : []).filter((leg) => leg && typeof leg === "object")
+    .filter((leg) => hasConfiguredWorkplace || leg.to_anchor !== "workplace");
+  const expectedLegs = hasConfiguredWorkplace
+    ? [["home", "centre"], ["centre", "workplace"]]
+    : [["home", "centre"]];
+  const hasExpectedLegs = legs.length === expectedLegs.length && legs.every((leg, index) =>
+    leg.from_anchor === expectedLegs[index][0] && leg.to_anchor === expectedLegs[index][1]
+  );
+  const hasCompleteTotals = Boolean(
+    hasExpectedLegs && legs.every(isUsableRouteLeg) &&
+    (mode !== "pt" || legs.every(elapsedDurationMatchesTimestamps)) &&
+    sample?.via_status !== "partial" && sample?.via_status !== "unavailable" &&
+    hasNonnegativeMetric(sample?.totals?.duration_seconds) &&
+    hasNonnegativeMetric(sample?.totals?.distance_meters) &&
+    sameMetric(legs.reduce((total, leg) => total + leg.duration_seconds, 0), sample.totals.duration_seconds) &&
+    sameMetric(legs.reduce((total, leg) => total + leg.distance_meters, 0), sample.totals.distance_meters)
+  );
+  const baselineReady = hasNegotiatedBaseline({ data, sample, profileId, mode, directBaselineStatus });
+  const directRoute = sample?.direct_route;
+  const hasDirectRoute = baselineReady && completeRoute(directRoute, "home", "workplace");
+  const directFailureMessage = baselineReady ? directRouteFailureMessage(directRoute) : null;
+  const individuallyCertified = isCertifiedComparison({
+    data, sample, mode, profileId, legs, expectedLegs, hasCompleteTotals, hasConfiguredWorkplace,
+    hasNegotiatedBaseline: baselineReady,
+  });
+  const comparisonAvailable = individuallyCertified && comparisonCompatible && comparisonSetComplete;
+  const signedDeviationSeconds = comparisonAvailable
+    ? sample.totals.duration_seconds - directRoute.totals.duration_seconds
+    : null;
+  const deviationHeadline = signedDeviationSeconds === null ? null
+    : signedDeviationSeconds <= 0 ? "No extra travel"
+      : signedDeviationSeconds < 60 ? "Less than 1 min extra travel"
+        : `${Math.floor(signedDeviationSeconds / 60 + 0.5)} min extra travel`;
+  const hasHomeCoordinate = hasCoordinate(data?.anchors?.home);
+  const hasWorkplaceCoordinate = hasCoordinate(data?.anchors?.workplace);
+  const unresolvedLeg = legs.find((leg) => leg?.status === "unavailable" &&
+    typeof leg.message === "string" && leg.message.toLowerCase().includes("could not be resolved"));
+  const homeUnresolvable = Boolean(data && !hasHomeCoordinate) ||
+    Boolean(unresolvedLeg?.message?.toLowerCase().includes("home"));
+  const workplaceUnresolvable = hasConfiguredWorkplace && Boolean(data) && (!hasWorkplaceCoordinate ||
+    Boolean(unresolvedLeg?.message?.toLowerCase().includes("workplace")));
+  const locationError = homeUnresolvable
+    ? "Your saved home location could not be resolved. Edit your family profile to update it."
+    : workplaceUnresolvable
+      ? "Your configured workplace location could not be resolved. Edit your family profile to update it."
+      : null;
+  const reasonCodes = [
+    ...(Array.isArray(sample?.reasons) ? sample.reasons : []),
+    ...(Array.isArray(sample?.comparison?.reasons) ? sample.comparison.reasons : []),
+    ...(Array.isArray(sample?.direct_route?.reasons) ? sample.direct_route.reasons : []),
+    ...legs.flatMap((leg) => Array.isArray(leg?.reasons) ? leg.reasons : []),
+  ].map((reason) => reason?.code).filter(Boolean);
+  const retryable = [
+    ...(Array.isArray(sample?.reasons) ? sample.reasons : []),
+    ...(Array.isArray(sample?.comparison?.reasons) ? sample.comparison.reasons : []),
+    ...(Array.isArray(sample?.direct_route?.reasons) ? sample.direct_route.reasons : []),
+    ...legs.flatMap((leg) => Array.isArray(leg?.reasons) ? leg.reasons : []),
+  ].some((reason) => reason?.retryable === true);
+  const timingUnverified = reasonCodes.includes("timing_unverified") ||
+    legs.some((leg) => leg?.timing?.verified === false) || sample?.comparison?.status === "unavailable" &&
+      !reasonCodes.some((code) => code !== "timing_unverified");
+  const comparisonUnavailableMessage = !comparisonSetComplete ? "Some centre estimates are missing, so route estimates cannot be compared directly."
+    : !comparisonCompatible ? "Cannot verify that route estimates use the same conditions, so they cannot be compared directly."
+    : !hasConfiguredWorkplace ? null
+    : directBaselineStatus === "unsupported" ? "Extra travel comparison is not supported for this profile and mode."
+      : directBaselineStatus === "disabled" ? "Extra travel comparison is not enabled for this service."
+        : directBaselineStatus === "error" ? "Extra travel comparison could not be checked. Retry to check support."
+          : directFailureMessage ? directFailureMessage
+            : timingUnverified ? "Travel timing could not be verified, so extra travel is unavailable."
+            : directBaselineStatus === "supported" ? "Extra travel unavailable with the available route data."
+              : "Extra travel comparison is not available yet.";
+  const usableViaLegs = legs.filter((leg, index) =>
+    leg?.from_anchor === expectedLegs[index]?.[0] && leg?.to_anchor === expectedLegs[index]?.[1] && isUsableRouteLeg(leg)
+  ).map((leg) => ({
+    from: leg.from_anchor, to: leg.to_anchor, durationSeconds: leg.duration_seconds,
+    distanceMeters: leg.distance_meters,
+  }));
+  return {
+    sample, legs, expectedLegs, hasConfiguredWorkplace, hasCompleteTotals, baselineReady,
+    directRoute, hasDirectRoute, comparisonAvailable, signedDeviationSeconds, deviationHeadline,
+    homeTravelSeconds: !hasConfiguredWorkplace && hasCompleteTotals ? sample.totals.duration_seconds : null,
+    homeTravelDistanceMeters: !hasConfiguredWorkplace && hasCompleteTotals ? sample.totals.distance_meters : null,
+    homeTravelComparable: comparisonCompatible && comparisonSetComplete,
+    directFailureMessage: baselineReady ? directRouteFailureMessage(directRoute) : null,
+    directFailureRetryable: baselineReady && Array.isArray(directRoute?.reasons) && directRoute.reasons.some((reason) => reason?.retryable === true),
+    retryable,
+    directBaselineStatus, locationError, comparisonUnavailableMessage, timingUnverified,
+    usableViaLegs,
+    directTravelSeconds: hasDirectRoute ? directRoute.totals.duration_seconds : null,
+    directTravelDistanceMeters: hasDirectRoute ? directRoute.totals.distance_meters : null,
+  };
+}
+
+export function CommuteModeSelector({ mode, onModeChange }) {
+  const modes = [["drive", "Driving"], ["pt", "Public transport"], ["walk", "Walking"], ["cycle", "Cycling"]];
+  return <div className="commute-mode-selector" role="group" aria-label="Travel mode">
+    {modes.map(([value, label]) => <button key={value} type="button"
+      aria-pressed={mode === value} className={`commute-mode-btn ${mode === value ? "active" : ""}`}
+      onClick={() => onModeChange?.(value)}>{label}</button>)}
+  </div>;
+}
+
 function routeArrow(geometry) {
   const startIndex = Math.max(0, Math.floor((geometry.length - 2) / 2));
   const start = geometry[startIndex];
@@ -221,16 +331,11 @@ export function CentreCommuteView({
   const routeAuthError = isEndpointAuthorizationError(error);
   const activeData = routeAuthError ? null :
     data || (activeCentreId != null ? setData?.[String(activeCentreId)] : null) || null;
-  const samples = Array.isArray(activeData?.samples) ? activeData.samples.filter((item) => item && typeof item === "object") : [];
-  const sample = mode === "pt"
-    ? samples.find((item) => item.kind === "weekday") || null
-    : samples[0] || null;
+  const summary = summarizeCommute({ data: activeData, profileId, mode, directBaselineStatus, workplaceConfigured });
+  const { sample, legs, expectedLegs, hasConfiguredWorkplace, hasCompleteTotals, directRoute,
+    hasDirectRoute, comparisonAvailable, signedDeviationSeconds, deviationHeadline,
+    directFailureMessage, directFailureRetryable } = summary;
   const currentSampleKind = sample?.kind || "single";
-  const hasConfiguredWorkplace = workplaceConfigured ?? Boolean(
-    activeData?.anchors?.workplace || (Array.isArray(sample?.legs) && sample.legs.some((leg) => leg?.to_anchor === "workplace"))
-  );
-  const legs = (Array.isArray(sample?.legs) ? sample.legs : []).filter((leg) => leg && typeof leg === "object")
-    .filter((leg) => hasConfiguredWorkplace || leg.to_anchor !== "workplace");
 
   // Check for unresolvable postal code messages
   const unresolvableLeg = legs.find(
@@ -252,41 +357,6 @@ export function CentreCommuteView({
     : workplaceUnresolvable
     ? "Your configured workplace location could not be resolved. Edit your family profile to update it."
     : null;
-  const expectedLegs = hasConfiguredWorkplace
-    ? [["home", "centre"], ["centre", "workplace"]]
-    : [["home", "centre"]];
-  const hasExpectedLegs = legs.length === expectedLegs.length && legs.every((leg, index) =>
-    leg.from_anchor === expectedLegs[index][0] && leg.to_anchor === expectedLegs[index][1]
-  );
-  const hasCompleteTotals = Boolean(
-    hasExpectedLegs && legs.every(isUsableRouteLeg) &&
-    (mode !== "pt" || legs.every(elapsedDurationMatchesTimestamps)) &&
-    sample?.via_status !== "partial" && sample?.via_status !== "unavailable" &&
-    hasNonnegativeMetric(sample?.totals?.duration_seconds) &&
-    hasNonnegativeMetric(sample?.totals?.distance_meters) &&
-    sameMetric(legs.reduce((total, leg) => total + leg.duration_seconds, 0), sample.totals.duration_seconds) &&
-    sameMetric(legs.reduce((total, leg) => total + leg.distance_meters, 0), sample.totals.distance_meters)
-  );
-  const directRoute = sample?.direct_route;
-  const baselineReady = hasNegotiatedBaseline({ data: activeData, sample, profileId, mode, directBaselineStatus });
-  const hasDirectRoute = baselineReady && completeRoute(directRoute, "home", "workplace");
-  const directFailureMessage = baselineReady ? directRouteFailureMessage(directRoute) : null;
-  const directFailureRetryable = baselineReady && Array.isArray(directRoute?.reasons) &&
-    directRoute.reasons.some((reason) => reason?.retryable === true);
-  const comparisonAvailable = isCertifiedComparison({
-    data: activeData, sample, mode, profileId, legs, expectedLegs, hasCompleteTotals, hasConfiguredWorkplace,
-    hasNegotiatedBaseline: baselineReady,
-  });
-  const signedDeviationSeconds = comparisonAvailable
-    ? sample.totals.duration_seconds - directRoute.totals.duration_seconds
-    : null;
-  const deviationHeadline = signedDeviationSeconds === null
-    ? null
-    : signedDeviationSeconds <= 0
-    ? "No extra travel"
-    : signedDeviationSeconds < 60
-    ? "Less than 1 min extra travel"
-    : `${Math.floor(signedDeviationSeconds / 60 + 0.5)} min extra travel`;
 
   // Determine center coordinates for MapContainer
   const availableLegsWithGeometry = legs.filter(
@@ -311,9 +381,9 @@ export function CentreCommuteView({
     <MapContainer center={mapCoordinates[0]} zoom={13} zoomAnimation={false} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
       <MapViewportController coordinates={mapCoordinates} />
       <TileLayer attribution='&copy; <a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener noreferrer">OneMap</a> &copy; Singapore Land Authority' url="https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png" maxZoom={19} minZoom={11} />
-      {hasCoordinate(activeData.anchors?.home) && <Marker position={[activeData.anchors.home.lat, activeData.anchors.home.lng]} alt="Home" title="Home"><Popup><strong>Home</strong></Popup></Marker>}
-      {hasCoordinate(activeData.anchors?.centre) && <Marker position={[activeData.anchors.centre.lat, activeData.anchors.centre.lng]} alt="Centre" title="Centre"><Popup><strong>Centre</strong>{centreName ? `: ${centreName}` : ""}</Popup></Marker>}
-      {hasCoordinate(activeData.anchors?.workplace) && <Marker position={[activeData.anchors.workplace.lat, activeData.anchors.workplace.lng]} alt="Workplace" title="Workplace"><Popup><strong>Workplace</strong></Popup></Marker>}
+      {hasCoordinate(activeData.anchors?.home) && <MapAnchorMarker kind="home" position={[activeData.anchors.home.lat, activeData.anchors.home.lng]} popup={<Popup><strong>Home</strong></Popup>} />}
+      {hasCoordinate(activeData.anchors?.centre) && <MapAnchorMarker kind="centre" position={[activeData.anchors.centre.lat, activeData.anchors.centre.lng]} popup={<Popup><strong>Centre</strong>{centreName ? `: ${centreName}` : ""}</Popup>} />}
+      {hasCoordinate(activeData.anchors?.workplace) && <MapAnchorMarker kind="work" position={[activeData.anchors.workplace.lat, activeData.anchors.workplace.lng]} popup={<Popup><strong>Work</strong></Popup>} />}
       {availableLegsWithGeometry.map((leg, idx) => { const routeKey = idx === 0 ? "home-centre" : "centre-workplace"; const color = idx === 0 ? "#2563eb" : "#07805f"; const arrow = routeArrow(leg.geometry); return <React.Fragment key={`${currentSampleKind}-${idx}`}><Polyline positions={leg.geometry.map((c) => [c.lat, c.lng])} pathOptions={{ color, ...routeVisibility(routeKey) }} /><Marker position={arrow.position} icon={arrow.icon} interactive={false} /></React.Fragment>; })}
       {hasDirectRoute && <><Polyline key="direct-route" positions={directRoute.legs[0].geometry.map((c) => [c.lat, c.lng])} pathOptions={{ color: "#59636e", weight: 3, dashArray: "10, 8", ...routeVisibility("direct") }} /><Marker position={routeArrow(directRoute.legs[0].geometry).position} icon={routeArrow(directRoute.legs[0].geometry).icon} interactive={false} /></>}
     </MapContainer>
@@ -324,40 +394,7 @@ export function CentreCommuteView({
       {commuteMap}
       <div id="centre-commute-summary" tabIndex={-1} aria-label="Commute details">
       {/* Travel mode selector */}
-      <div className="commute-mode-selector" role="group" aria-label="Travel mode">
-        <button
-          type="button"
-          aria-pressed={mode === "drive"}
-          className={`commute-mode-btn ${mode === "drive" ? "active" : ""}`}
-          onClick={() => onModeChange && onModeChange("drive")}
-        >
-          Driving
-        </button>
-        <button
-          type="button"
-          aria-pressed={mode === "pt"}
-          className={`commute-mode-btn ${mode === "pt" ? "active" : ""}`}
-          onClick={() => onModeChange && onModeChange("pt")}
-        >
-          Public transport
-        </button>
-        <button
-          type="button"
-          aria-pressed={mode === "walk"}
-          className={`commute-mode-btn ${mode === "walk" ? "active" : ""}`}
-          onClick={() => onModeChange && onModeChange("walk")}
-        >
-          Walking
-        </button>
-        <button
-          type="button"
-          aria-pressed={mode === "cycle"}
-          className={`commute-mode-btn ${mode === "cycle" ? "active" : ""}`}
-          onClick={() => onModeChange && onModeChange("cycle")}
-        >
-          Cycling
-        </button>
-      </div>
+      <CommuteModeSelector mode={mode} onModeChange={onModeChange} />
 
       {loading && !activeData && (
         <>
