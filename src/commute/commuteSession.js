@@ -3,6 +3,7 @@ import {
   getCentreCommute as defaultGetCentreCommute,
   getCommuteCapabilities as defaultGetCommuteCapabilities,
 } from "../api";
+import { isEndpointAuthorizationError, isUsableRouteLeg } from "./commuteContract.js";
 
 const SELECTED_SAMPLING_CONTRACT = "weekday_0800_wed_thu_fri_v1";
 const SELECTED_SAMPLING_ENABLED = import.meta.env?.VITE_COMMUTE_SELECTED_SAMPLING_ENABLED === "true";
@@ -24,19 +25,6 @@ function singaporeParts(value) {
 
 function isZonedTimestamp(value) {
   return typeof value === "string" && /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) && Number.isFinite(Date.parse(value));
-}
-
-function isEndpointAuthorizationError(error) {
-  if (error?.failureClass === "service" || error?.code === "provider_auth_failed") return false;
-  return error?.failureClass === "authentication" || error?.status === 401 || error?.status === 403;
-}
-
-function usableRouteLeg(leg) {
-  return leg?.status === "available" && typeof leg.source === "string" && leg.source.trim() !== "" &&
-    Number.isFinite(leg.duration_seconds) && leg.duration_seconds >= 0 &&
-    Number.isFinite(leg.distance_meters) && leg.distance_meters >= 0 &&
-    Array.isArray(leg.geometry) && leg.geometry.length >= 2 &&
-    leg.geometry.every((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lng));
 }
 
 function sameSelectedEvaluationContext(previous, current) {
@@ -61,25 +49,25 @@ function retainSameConditionRoutes(previous, current) {
   const previousLegs = new Map((oldSample.legs || []).map((leg) => [`${leg.from_anchor}:${leg.to_anchor}`, leg]));
   const currentKeys = new Set((newSample.legs || []).map((leg) => `${leg.from_anchor}:${leg.to_anchor}`));
   const legs = (newSample.legs || []).map((leg) => {
-    if (usableRouteLeg(leg)) return leg;
+    if (isUsableRouteLeg(leg)) return leg;
     const old = previousLegs.get(`${leg.from_anchor}:${leg.to_anchor}`);
-    return usableRouteLeg(old) ? old : leg;
+    return isUsableRouteLeg(old) ? old : leg;
   });
   for (const [key, leg] of previousLegs) {
-    if (!currentKeys.has(key) && usableRouteLeg(leg)) legs.push(leg);
+    if (!currentKeys.has(key) && isUsableRouteLeg(leg)) legs.push(leg);
   }
 
   const currentViaComplete = newSample.via_status === "available" &&
     Number.isFinite(newSample.totals?.duration_seconds) && Number.isFinite(newSample.totals?.distance_meters) &&
-    legs.length === (newSample.legs || []).length && legs.every(usableRouteLeg);
+    legs.length === (newSample.legs || []).length && legs.every(isUsableRouteLeg);
   const baselineConfirmed = current?.comparison_contract === "direct_baseline_v1" &&
     previous?.comparison_contract === "direct_baseline_v1";
   const currentDirectComplete = baselineConfirmed && newSample.direct_route?.status === "available" &&
-    newSample.direct_route.legs?.length === 1 && newSample.direct_route.legs.every(usableRouteLeg) &&
+    newSample.direct_route.legs?.length === 1 && newSample.direct_route.legs.every(isUsableRouteLeg) &&
     Number.isFinite(newSample.direct_route.totals?.duration_seconds) &&
     Number.isFinite(newSample.direct_route.totals?.distance_meters);
   const oldDirectComplete = baselineConfirmed && oldSample.direct_route?.status === "available" &&
-    oldSample.direct_route.legs?.length === 1 && oldSample.direct_route.legs.every(usableRouteLeg) &&
+    oldSample.direct_route.legs?.length === 1 && oldSample.direct_route.legs.every(isUsableRouteLeg) &&
     Number.isFinite(oldSample.direct_route.totals?.duration_seconds) &&
     Number.isFinite(oldSample.direct_route.totals?.distance_meters);
   const directRoute = currentDirectComplete ? newSample.direct_route :
@@ -95,7 +83,7 @@ function retainSameConditionRoutes(previous, current) {
   const mergedSample = {
     ...newSample,
     legs,
-    via_status: currentViaComplete ? newSample.via_status : legs.some(usableRouteLeg) ? "partial" : newSample.via_status,
+    via_status: currentViaComplete ? newSample.via_status : legs.some(isUsableRouteLeg) ? "partial" : newSample.via_status,
     totals: currentViaComplete ? newSample.totals : null,
     ...(baselineConfirmed && directRoute ? { direct_route: directRoute } : {}),
     ...(comparison ? { comparison } : {}),

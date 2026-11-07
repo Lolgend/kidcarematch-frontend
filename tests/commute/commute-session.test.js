@@ -1366,13 +1366,15 @@ describe("createCommuteSession controller", () => {
       duration_seconds: 900, distance_meters: 5000, geometry: [{ lat: 1.35, lng: 103.85 }, { lat: 1.28, lng: 103.85 }],
       departure_at: arrival, arrival_at: "2026-11-11T08:30:00+08:00", reasons: [],
     };
-    const makeResponse = (secondUnavailable) => {
+    const makeResponse = (secondUnavailable, outOfRangeGeometry = false) => {
       const response = selectedCycleResponse(101, 0);
       const sample = response.samples[0];
       sample.conditions.initial_departure_at = departure;
       sample.legs = [firstLeg, secondUnavailable ? {
         ...secondLeg, status: "unavailable", source: null, duration_seconds: null, distance_meters: null,
         geometry: null, reasons: [{ code: "workplace_unresolved", failure_class: "location", retryable: false }],
+      } : outOfRangeGeometry ? {
+        ...secondLeg, geometry: [{ lat: 1.35, lng: 103.85 }, { lat: 95, lng: 103.8 }],
       } : secondLeg];
       sample.via_status = secondUnavailable ? "partial" : "available";
       sample.totals = secondUnavailable ? null : { duration_seconds: 1800, distance_meters: 9000 };
@@ -1395,5 +1397,23 @@ describe("createCommuteSession controller", () => {
     expect(retried.via_status).toBe("partial");
     expect(retried.legs.map((leg) => leg.status)).toEqual(["available", "available"]);
     expect(retried.totals).toBe(null);
+    session.destroy();
+
+    call = 0;
+    loadCommute = vi.fn(async () => makeResponse(false, call++ > 0));
+    session = createCommuteSession({
+      loadCommute,
+      getCapabilities: vi.fn().mockResolvedValue({ direct_baseline_contract: null, sampling_contract: "weekday_0800_wed_thu_fri_v1" }),
+      selectedSamplingEnabled: true,
+      now: () => new Date("2026-11-07T09:00:00+08:00"),
+    });
+    await session.setMode("pt");
+    await session.open({ centreId: 101, profileId: "prof-1" });
+    await session.retry();
+    const outOfRangeRoute = session.getState().data.samples[0];
+    expect(outOfRangeRoute.via_status).toBe("available");
+    expect(outOfRangeRoute.legs[1].geometry[1].lat).toBe(1.28);
+    expect(outOfRangeRoute.totals.duration_seconds).toBe(1800);
+    session.destroy();
   });
 });

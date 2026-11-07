@@ -24,7 +24,7 @@ import CentreCommute from './commute/CentreCommute';
 import { resetSessionMode } from './commute/commuteSession';
 import CentreLocationMap from './commute/CentreLocationMap';
 import { centreDetailsPath, centreIdFromPath } from './centreDetailsRoute';
-import { claimCentreReturnTab, clearCentreReturnContext, hasCentreReturnAccount, loadCentreReturnContext, saveCentreReturnContext } from './centreReturnContext';
+import { claimCentreReturnTab, clearCentreReturnContext, hasCentreReturnAccount, loadCentreReturnContext, protectCentreReturnQuery, restoreCentreReturnQuery, saveCentreReturnContext } from './centreReturnContext';
 import {
   getCentres,
   getCentreById,
@@ -482,6 +482,8 @@ function App() {
   const [centres, setCentres] = useState([]);
   const [centresLoading, setCentresLoading] = useState(true);
   const [centresError, setCentresError] = useState('');
+  const [guestPreviewIds, setGuestPreviewIds] = useState([]);
+  const [guestPreviewStatus, setGuestPreviewStatus] = useState('loading');
   const [centreSummary, setCentreSummary] = useState(null);
   const [selectedCentre, setSelectedCentre] = useState(null);
 
@@ -627,6 +629,18 @@ function App() {
     setMatchStatus('loading');
   };
 
+  const restoreCentreOriginState = (origin, restoredPage) => {
+    setPage(restoredPage);
+    setQuery(restoreCentreReturnQuery(origin, profile));
+    setSelectedDistricts(Array.isArray(origin.districts) ? origin.districts : []);
+    setLevel(origin.level || '');
+    setPageOffset(Number(origin.pageOffset) || 0);
+    setCompareSelectedIds(Array.isArray(origin.compareSelectedIds) ? origin.compareSelectedIds : []);
+    if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
+      restoreMatchingOrigin(origin);
+    }
+  };
+
   const [onboardingState, setOnboardingState] = useState(() => ({
     status: 'guest',
     profile: null,
@@ -647,19 +661,12 @@ function App() {
     }
     centreReturnOriginRef.current = context;
     const restoredPage = permittedCentreOriginPage(context, currentUser, onboardingState, profile);
-    setPage(restoredPage || 'Overview');
     if (!restoredPage) {
+      setPage('Overview');
       centreReturnRestoredRef.current = true;
       return;
     }
-    setQuery(context.query || '');
-    setSelectedDistricts(Array.isArray(context.districts) ? context.districts : []);
-    setLevel(context.level || '');
-    setPageOffset(Number(context.pageOffset) || 0);
-    setCompareSelectedIds(Array.isArray(context.compareSelectedIds) ? context.compareSelectedIds : []);
-    if (restoredPage === 'Find my matches' && Array.isArray(context.matchSnapshot)) {
-      restoreMatchingOrigin(context);
-    }
+    restoreCentreOriginState(context, restoredPage);
     centreReturnRestoredRef.current = true;
     window.requestAnimationFrame(() => window.scrollTo(0, Math.max(0, Number(context.scrollY) || 0)));
   }, [authResolved, currentUser?.uid, onboardingState.status, profile, returnContextReady]);
@@ -766,6 +773,28 @@ function App() {
     loadCentres();
     return () => { cancelled = true; };
   }, [query, selectedDistricts, level, pageOffset]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCentres({ limit: 6, offset: 0 })
+      .then((data) => {
+        const items = Array.isArray(data) ? data : data?.items;
+        if (!Array.isArray(items)) throw new Error('Unexpected guest preview response.');
+        if (!cancelled) {
+          setGuestPreviewIds(items.slice(0, 6)
+            .filter((centre) => centre?.id != null || centre?.centre_id != null)
+            .map((centre) => String(centre.id ?? centre.centre_id)));
+          setGuestPreviewStatus('ready');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setGuestPreviewIds([]);
+          setGuestPreviewStatus('error');
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     getDistricts()
@@ -1057,7 +1086,7 @@ function App() {
           uid: currentUser?.uid || null,
           returnPath: window.location.pathname,
           page,
-          query: [profile?.home, profile?.work].filter(Boolean).some((value) => query.includes(String(value))) ? '' : query,
+          query: protectCentreReturnQuery(query, profile),
           districts: selectedDistricts,
           level,
           pageOffset,
@@ -1174,6 +1203,12 @@ function App() {
 
   const openCentreDetails = (centre) => {
     if (!confirmReviewDeparture()) return;
+    if (!currentUser && (guestPreviewStatus !== 'ready' || !guestPreviewIds.includes(String(centre?.id)))) {
+      notify(guestPreviewStatus === 'error'
+        ? 'Guest preview access could not be checked. Please try again later.'
+        : 'Please wait while guest preview access is checked.');
+      return;
+    }
     const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
     if (currentUser && !centreViewerReady) {
       notify('Please complete your family profile to access centre details.');
@@ -1197,7 +1232,7 @@ function App() {
   useEffect(() => {
     const restoreFromLocation = () => {
       const centreId = centreIdFromPath(window.location.pathname);
-      if (!authResolved || centresLoading) return;
+      if (!authResolved || centresLoading || (!currentUser && guestPreviewStatus === 'loading')) return;
       if (!centreId) {
         const origin = returnContextReady
           ? loadCentreReturnContext(currentUser?.uid || null, window.history.state?.centreOriginId)
@@ -1207,22 +1242,17 @@ function App() {
         if (origin) {
           centreReturnOriginRef.current = origin;
           const restoredPage = permittedCentreOriginPage(origin, currentUser, onboardingState, profile);
-          setPage(restoredPage || 'Overview');
-          if (!restoredPage) return;
-          setQuery(origin.query || '');
-          setSelectedDistricts(Array.isArray(origin.districts) ? origin.districts : []);
-          setLevel(origin.level || '');
-          setPageOffset(Number(origin.pageOffset) || 0);
-          setCompareSelectedIds(Array.isArray(origin.compareSelectedIds) ? origin.compareSelectedIds : []);
-          if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
-            restoreMatchingOrigin(origin);
+          if (!restoredPage) {
+            setPage('Overview');
+            return;
           }
+          restoreCentreOriginState(origin, restoredPage);
         }
         return;
       }
       const centreViewerReady = ['ready', 'admin'].includes(onboardingState.status) || currentUser?.email?.toLowerCase() === 'swetalakshita@gmail.com';
       if (currentUser && !centreViewerReady) return;
-      const permittedPreview = centres.slice(0, 6).some((centre) => String(centre.id) === centreId);
+      const permittedPreview = guestPreviewStatus === 'ready' && guestPreviewIds.includes(centreId);
       if (!currentUser && !permittedPreview) {
         setSelectedCentre({ id: centreId, name: 'Sign in to view this centre' });
         setDetailError('Please sign in to view centre details.');
@@ -1265,7 +1295,7 @@ function App() {
       restoreFromLocation();
     }
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [authResolved, centres, centresLoading, currentUser, onboardingState, profile, returnContextReady, selectedCentre?.id]);
+  }, [authResolved, centres, centresLoading, currentUser, guestPreviewIds, guestPreviewStatus, onboardingState, profile, returnContextReady, selectedCentre?.id]);
 
   const handleReviewSubmit = async (event) => {
     event.preventDefault();
@@ -3150,15 +3180,7 @@ function App() {
               if (origin && restoredPage && centreReturnRestoredRef.current) pendingCentreOriginRestoreRef.current = origin;
               setSelectedCentre(null);
               if (origin && restoredPage && centreReturnRestoredRef.current) {
-                setPage(restoredPage);
-                setQuery(origin.query || '');
-                setSelectedDistricts(Array.isArray(origin.districts) ? origin.districts : []);
-                setLevel(origin.level || '');
-                setPageOffset(Number(origin.pageOffset) || 0);
-                setCompareSelectedIds(Array.isArray(origin.compareSelectedIds) ? origin.compareSelectedIds : []);
-                if (restoredPage === 'Find my matches' && Array.isArray(origin.matchSnapshot)) {
-                  restoreMatchingOrigin(origin);
-                }
+                restoreCentreOriginState(origin, restoredPage);
               } else {
                 centreReturnOriginRef.current = null;
                 openPage('Preschool directory', { reviewDepartureConfirmed: true });
