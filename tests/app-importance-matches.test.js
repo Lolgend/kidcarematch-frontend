@@ -181,12 +181,12 @@ describe('importance ratings and backend matching flow', () => {
     expect(save.body).toMatchObject({ vacancy_weight: 5, cost_weight: 5, travel_weight: 1 });
 
     await openPage('Find my matches');
-    await waitFor(() => expect(screen.getByText('Showing 10 matches')).toBeTruthy());
-    expect(screen.queryByRole('heading', { name: 'Why these matches' })).toBeNull();
+    await waitFor(() => expect(screen.getByText('Showing 6 matches')).toBeTruthy());
+    expect(screen.queryByRole('heading', { name: 'Fit Explanation' })).toBeNull();
     const matchRequests = requests.filter((request) => request.path === '/api/v1/centres/match');
-    expect(matchRequests[0].body).toEqual({ profile_id: 'saved-family-1', top_n: 10 });
+    expect(matchRequests[0].body).toEqual({ profile_id: 'saved-family-1', top_n: 6 });
     const cards = [...document.querySelectorAll('.centre-card')];
-    expect(cards).toHaveLength(10);
+    expect(cards).toHaveLength(6);
     expect(within(cards[0]).getByRole('heading', { name: 'Backend Centre 1' })).toBeTruthy();
     expect(within(cards[1]).getByRole('heading', { name: 'Backend Centre 2' })).toBeTruthy();
     expect(within(cards[0]).getByText(/21% match/)).toBeTruthy();
@@ -198,7 +198,11 @@ describe('importance ratings and backend matching flow', () => {
     expect(cards[0].textContent).toContain('Vacancy fit 86% · Cost fit 72% · Travel fit 49%');
     expect(cards[0].textContent).toContain('Vacancy month: Jan 2027');
     expect(cards[0].textContent).toContain('Matching travel estimate: 18 min · 3 km');
-    expect(screen.queryByRole('heading', { name: 'Backend Centre 11' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Backend Centre 7' })).toBeNull();
+    const commuteCentreIds = [...new Set(requests
+      .map(({ path }) => path.match(/^\/api\/v1\/centres\/(match-\d+)\/commute$/)?.[1])
+      .filter(Boolean))];
+    expect(commuteCentreIds).toEqual(['match-1', 'match-2', 'match-3', 'match-4', 'match-5', 'match-6']);
 
     fireEvent.click(within(cards[0]).getByRole('button', { name: 'View details' }));
     await waitFor(() => expect(screen.getByRole('heading', { level: 1, name: 'Backend Centre 1' })).toBeTruthy());
@@ -218,7 +222,7 @@ describe('importance ratings and backend matching flow', () => {
     const latestMatchIndex = requests.map((request) => request.path).lastIndexOf('/api/v1/centres/match');
     expect(latestSaveIndex).toBeGreaterThan(-1);
     expect(latestSaveIndex).toBeLessThan(latestMatchIndex);
-    expect(requests[latestMatchIndex].body).toEqual({ profile_id: 'saved-family-1', top_n: 10 });
+    expect(requests[latestMatchIndex].body).toEqual({ profile_id: 'saved-family-1', top_n: 6 });
 
     results = [];
     fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
@@ -226,9 +230,27 @@ describe('importance ratings and backend matching flow', () => {
     expect(screen.getByText(/did not return any centres/i)).toBeTruthy();
   });
 
+  it('shows the actual shortlist count for fewer than six, one, and zero matches', async () => {
+    results = makeResults().slice(0, 3);
+    await openMatches();
+    await screen.findByText('Showing 3 matches');
+    expect(document.querySelectorAll('.centre-card')).toHaveLength(3);
+
+    results = [makeResults()[0]];
+    fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
+    await screen.findByText('Showing 1 match');
+    expect(document.querySelectorAll('.centre-card')).toHaveLength(1);
+
+    results = [];
+    fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
+    await screen.findByText('Showing 0 matches');
+    expect(screen.getByRole('heading', { name: 'No matches returned' })).toBeTruthy();
+    expect(document.querySelectorAll('.centre-card')).toHaveLength(0);
+  });
+
   it('clears the pending save state when an edit is reverted before the debounce expires', async () => {
     await openMatches();
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     const initialMatchCount = requests.filter((request) => request.path === '/api/v1/centres/match').length;
     vi.useFakeTimers();
     const slider = screen.getByRole('slider', { name: 'Travel fit' });
@@ -244,7 +266,7 @@ describe('importance ratings and backend matching flow', () => {
 
   it('saves a reverted rating after an earlier in-flight write settles', async () => {
     await openMatches();
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     const saveBodies = [];
     let releaseFirstSave;
     fetchMock.mockImplementation(async (input, options = {}) => {
@@ -285,7 +307,7 @@ describe('importance ratings and backend matching flow', () => {
 
   it('clears pending progress when an older in-flight save fails after ratings revert', async () => {
     await openMatches();
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     let releaseSave;
     const saveBodies = [];
     fetchMock.mockImplementation((input, options = {}) => {
@@ -321,7 +343,7 @@ describe('importance ratings and backend matching flow', () => {
 
   it('does not schedule another save while the current save response is slow', async () => {
     await openMatches();
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     const startingMatchCount = requests.filter((request) => request.path === '/api/v1/centres/match').length;
     let releaseSave;
     const saveBodies = [];
@@ -356,7 +378,7 @@ describe('importance ratings and backend matching flow', () => {
 
   it('clears save progress when the saved rating is restored while matching is still pending', async () => {
     await openMatches();
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     const saveBodies = [];
     let releaseFirstMatch;
     let matchCalls = 0;
@@ -457,13 +479,15 @@ describe('importance ratings and backend matching flow', () => {
     expect(create.body).toMatchObject({ vacancy_weight: 2, cost_weight: 2, travel_weight: 2 });
     await waitFor(() => expect(requests.some((request) => request.path === '/api/v1/centres/match')).toBe(true));
     const match = requests.find((request) => request.path === '/api/v1/centres/match');
-    expect(match.body).toEqual({ profile_id: 'saved-family-1', top_n: 10 });
-    await screen.findByText('Showing 10 matches');
+    expect(match.body).toEqual({ profile_id: 'saved-family-1', top_n: 6 });
+    await screen.findByText('Showing 6 matches');
   });
 
   it('shows the backend summary, lead rationale, and aligned candidate highlights without duplicates or provider claims', async () => {
     explanation = {
-      summary_narrative: 'Your saved ratings prioritize vacancy and cost.',
+      summary_narrative: '  Your saved ratings prioritize vacancy and cost.  ',
+      ranking_rationale: '  Backend Centre 1 ranks first for its vacancy fit.  ',
+      fallback_used: false,
       top_centre_rationale: 'Backend Centre 1 best fits your vacancy needs.',
       candidate_highlights: [
         'Backend Centre 1 balances vacancy and cost.',
@@ -474,9 +498,14 @@ describe('importance ratings and backend matching flow', () => {
     results[1].highlight = 'Backend Centre 2 has the best travel fit.';
     await openMatches();
 
-    const summary = await screen.findByRole('heading', { name: 'Why these matches' }, { timeout: 5000 });
-    expect(summary.parentElement.textContent).toContain(explanation.summary_narrative);
+    const summary = await screen.findByRole('heading', { name: 'Fit Explanation' }, { timeout: 5000 });
+    expect(summary.parentElement.textContent).toContain('Your saved ratings prioritize vacancy and cost.');
+    expect(summary.parentElement.textContent).toContain('Backend Centre 1 ranks first for its vacancy fit.');
+    expect(summary.parentElement.textContent.indexOf('Your saved ratings prioritize vacancy and cost.'))
+      .toBeLessThan(summary.parentElement.textContent.indexOf('Backend Centre 1 ranks first for its vacancy fit.'));
+    expect(summary.parentElement.textContent).not.toContain('  Your saved ratings');
     expect(summary.parentElement.textContent).not.toMatch(/gemini/i);
+    expect(summary.parentElement.textContent).not.toMatch(/AI Fit Explanation/i);
     const cards = [...document.querySelectorAll('.centre-card')];
     expect(within(cards[0]).getByText(explanation.top_centre_rationale)).toBeTruthy();
     expect(within(cards[0]).getAllByText(explanation.candidate_highlights[0])).toHaveLength(1);
@@ -486,19 +515,28 @@ describe('importance ratings and backend matching flow', () => {
 
   it('omits each independently missing or blank explanation field', async () => {
     await openMatches();
-    await screen.findByText('Showing 10 matches', {}, { timeout: 4000 });
+    await screen.findByText('Showing 6 matches', {}, { timeout: 4000 });
 
     const cases = [
       { field: 'summary_narrative', omit: true },
+      { field: 'ranking_rationale', omit: true },
       { field: 'top_centre_rationale', omit: true },
       { field: 'candidate_highlights', omit: true },
       { field: 'summary_narrative', blank: '   ' },
+      { field: 'summary_narrative', blank: null },
+      { field: 'ranking_rationale', blank: '\n  ' },
+      { field: 'ranking_rationale', blank: null },
       { field: 'top_centre_rationale', blank: '\n  ' },
+      { field: 'top_centre_rationale', blank: null },
       { field: 'candidate_highlights', blank: ['', '  '] },
+      { field: 'candidate_highlights', blank: null },
+      { field: 'summary_narrative', blank: { malformed: true } },
+      { field: 'ranking_rationale', blank: ['malformed'] },
     ];
     for (const scenario of cases) {
       explanation = {
         summary_narrative: 'An available summary.',
+        ranking_rationale: 'An available ranking rationale.',
         top_centre_rationale: 'An available lead rationale.',
         candidate_highlights: ['First positional highlight.', 'Second positional highlight.'],
       };
@@ -507,13 +545,22 @@ describe('importance ratings and backend matching flow', () => {
       const requestCount = requests.filter((request) => request.path === '/api/v1/centres/match').length;
       fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
       await waitFor(() => expect(requests.filter((request) => request.path === '/api/v1/centres/match')).toHaveLength(requestCount + 1));
-      await screen.findByText('Showing 10 matches', {}, { timeout: 2000 });
+      await screen.findByText('Showing 6 matches', {}, { timeout: 2000 });
 
       if (scenario.field === 'summary_narrative') {
-        expect(screen.queryByRole('heading', { name: 'Why these matches' })).toBeNull();
+        expect(screen.getByRole('heading', { name: 'Fit Explanation' })).toBeTruthy();
+        expect(screen.queryByText('An available summary.')).toBeNull();
+        expect(screen.getByText('An available ranking rationale.')).toBeTruthy();
+        expect(screen.queryByText('[object Object]')).toBeNull();
+        expect(within(document.querySelectorAll('.centre-card')[0]).getByText('An available lead rationale.')).toBeTruthy();
+      } else if (scenario.field === 'ranking_rationale') {
+        expect(screen.getByRole('heading', { name: 'Fit Explanation' })).toBeTruthy();
+        expect(screen.getByText('An available summary.')).toBeTruthy();
+        expect(screen.queryByText('An available ranking rationale.')).toBeNull();
+        expect(screen.queryByText('malformed')).toBeNull();
         expect(within(document.querySelectorAll('.centre-card')[0]).getByText('An available lead rationale.')).toBeTruthy();
       } else {
-        expect(screen.getByRole('heading', { name: 'Why these matches' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: 'Fit Explanation' })).toBeTruthy();
       }
       const cards = [...document.querySelectorAll('.centre-card')];
       if (scenario.field === 'top_centre_rationale') {
@@ -527,6 +574,64 @@ describe('importance ratings and backend matching flow', () => {
     }
   }, 20000);
 
+  it('shows ranking-only explanations, but omits the banner when both narratives are unusable', async () => {
+    explanation = {
+      summary_narrative: '   ',
+      ranking_rationale: ' Backend Centre 1 ranks ahead because its fit is stronger. ',
+      top_centre_rationale: 'Individual centre explanation remains available.',
+    };
+    await openMatches();
+
+    const heading = await screen.findByRole('heading', { name: 'Fit Explanation' }, { timeout: 5000 });
+    expect(heading.parentElement.textContent).toContain('Backend Centre 1 ranks ahead because its fit is stronger.');
+    expect(heading.parentElement.textContent).not.toContain('  Backend');
+    expect(within(document.querySelectorAll('.centre-card')[0]).getByText('Individual centre explanation remains available.')).toBeTruthy();
+
+    explanation = {
+      summary_narrative: {},
+      ranking_rationale: ['malformed'],
+      top_centre_rationale: 'Individual centre explanation remains available.',
+    };
+    fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
+    await waitFor(() => expect(requests.filter((request) => request.path === '/api/v1/centres/match')).toHaveLength(2));
+    await screen.findByText('Showing 6 matches');
+    expect(screen.queryByRole('heading', { name: 'Fit Explanation' })).toBeNull();
+    expect(within(document.querySelectorAll('.centre-card')[0]).getByText('Individual centre explanation remains available.')).toBeTruthy();
+  }, 15000);
+
+  it('omits a null explanation object while keeping result-level explanations', async () => {
+    results[0].highlight = 'A valid result-level explanation.';
+    explanation = null;
+    await openMatches();
+
+    await screen.findByText('Showing 6 matches');
+    expect(screen.queryByRole('heading', { name: 'Fit Explanation' })).toBeNull();
+    expect(within(document.querySelectorAll('.centre-card')[0]).getByText('A valid result-level explanation.')).toBeTruthy();
+  });
+
+  it('shows narratives for one match and suppresses the banner for zero matches', async () => {
+    results = results.slice(0, 1);
+    explanation = {
+      summary_narrative: 'One centre fits the saved preferences.',
+      ranking_rationale: 'This centre is the only match returned.',
+    };
+    await openMatches();
+
+    const heading = await screen.findByRole('heading', { name: 'Fit Explanation' }, { timeout: 5000 });
+    expect(heading.parentElement.textContent).toContain('One centre fits the saved preferences.');
+    expect(heading.parentElement.textContent).toContain('This centre is the only match returned.');
+    expect(document.querySelectorAll('.centre-card')).toHaveLength(1);
+
+    results = [];
+    explanation = {
+      summary_narrative: 'No matched centres explain this empty pool.',
+      ranking_rationale: 'There is no ranking to explain.',
+    };
+    fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
+    await screen.findByRole('heading', { name: 'No matches returned' });
+    expect(screen.queryByRole('heading', { name: 'Fit Explanation' })).toBeNull();
+  }, 15000);
+
   it('keeps per-result and positional highlights with their cards through centre detail and return', async () => {
     vi.stubGlobal('BroadcastChannel', undefined);
     Object.defineProperty(window, 'BroadcastChannel', { configurable: true, value: undefined });
@@ -535,14 +640,16 @@ describe('importance ratings and backend matching flow', () => {
     Object.defineProperty(window, 'CSS', { configurable: true, value: cssTestApi });
     explanation = {
       summary_narrative: 'A summary that stays with these results.',
+      ranking_rationale: 'Original ranking remains attached to this match run.',
       candidate_highlights: ['   ', 'Second centre positional highlight.'],
     };
     results[0].highlight = 'First centre result highlight.';
     results[1].highlight = 'Second centre result highlight.';
     await openMatches();
 
-    await screen.findByText('Showing 10 matches', {}, { timeout: 4000 });
+    await screen.findByText('Showing 6 matches', {}, { timeout: 4000 });
     let cards = [...document.querySelectorAll('.centre-card')];
+    expect(cards).toHaveLength(6);
     expect(within(cards[0]).getByText('First centre result highlight.')).toBeTruthy();
     expect(within(cards[0]).queryByText('   ')).toBeNull();
     expect(within(cards[1]).getByText('Second centre positional highlight.')).toBeTruthy();
@@ -551,9 +658,11 @@ describe('importance ratings and backend matching flow', () => {
     fireEvent.click(within(cards[0]).getByRole('button', { name: 'View details' }));
     await screen.findByRole('heading', { level: 1, name: 'Backend Centre 1' });
     fireEvent.click(screen.getByRole('link', { name: /browse centres/i }));
-    expect(await screen.findByRole('heading', { name: 'Why these matches' }, { timeout: 4000 })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Fit Explanation' }, { timeout: 4000 })).toBeTruthy();
     expect(screen.getByText('A summary that stays with these results.')).toBeTruthy();
+    expect(screen.getByText('Original ranking remains attached to this match run.')).toBeTruthy();
     cards = [...document.querySelectorAll('.centre-card')];
+    expect(cards).toHaveLength(6);
     expect(within(cards[0]).getByText('First centre result highlight.')).toBeTruthy();
     expect(within(cards[1]).getByText('Second centre positional highlight.')).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(cards[0].querySelector('[data-centre-id="match-1"]')));
@@ -564,7 +673,7 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
     await openPage('Family profile');
     await screen.findByRole('slider', { name: 'Travel fit' });
     await openPage('Find my matches');
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     const slider = screen.getByRole('slider', { name: 'Travel fit' });
     const originalMatchCount = requests.filter((request) => request.path === '/api/v1/centres/match').length;
     let failSave = true;
@@ -586,7 +695,7 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
     fireEvent.change(slider, { target: { value: '5' } });
     await screen.findByRole('button', { name: /retry save/i });
     expect(slider.value).toBe('5');
-    expect(screen.getByText('Showing 10 matches')).toBeTruthy();
+    expect(screen.getByText('Showing 6 matches')).toBeTruthy();
     expect(requests.filter((request) => request.path === '/api/v1/centres/match')).toHaveLength(originalMatchCount);
 
     failSave = false;
@@ -600,23 +709,89 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
   });
 
   it('keeps prior matches visible and marked outdated when a fresh matching request fails', async () => {
+    explanation = {
+      summary_narrative: 'Retained summary belongs to the displayed results.',
+      ranking_rationale: 'Retained ranking rationale belongs to the displayed results.',
+    };
     await signIn();
     await openPage('Family profile');
     await screen.findByRole('slider', { name: 'Travel fit' });
     await openPage('Find my matches');
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
+    let rejectRefresh;
     fetchMock.mockImplementation(async (input, options = {}) => {
       const path = new URL(input).pathname;
       const method = options.method || 'GET';
       const body = options.body ? JSON.parse(options.body) : null;
       requests.push({ path, method, body });
-      if (path === '/api/v1/centres/match' && method === 'POST') throw new Error('Matching unavailable');
+      if (path === '/api/v1/centres/match' && method === 'POST') return new Promise((_resolve, reject) => { rejectRefresh = reject; });
       return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
     });
     fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
+    await screen.findByText(/finding updated matches.*previous results remain visible/i);
+    expect(screen.getByText('Retained ranking rationale belongs to the displayed results.')).toBeTruthy();
+    await act(async () => { rejectRefresh(new Error('Matching unavailable')); });
     await screen.findByText(/results are out of date/i);
     expect(screen.getByRole('heading', { name: 'Backend Centre 1' })).toBeTruthy();
+    expect(screen.getByText('Retained summary belongs to the displayed results.')).toBeTruthy();
+    expect(screen.getByText('Retained ranking rationale belongs to the displayed results.')).toBeTruthy();
     expect(screen.getByRole('button', { name: /retry matching/i })).toBeTruthy();
+  });
+
+  it('caps an older oversized saved match snapshot and evaluates commutes only for its first six results', async () => {
+    vi.stubGlobal('BroadcastChannel', undefined);
+    Object.defineProperty(window, 'BroadcastChannel', { configurable: true, value: undefined });
+    const cssTestApi = { escape: (value) => String(value) };
+    vi.stubGlobal('CSS', cssTestApi);
+    Object.defineProperty(window, 'CSS', { configurable: true, value: cssTestApi });
+    await openMatches();
+    await screen.findByText('Showing 6 matches');
+    const legacyResults = makeResults().slice(0, 8).map((result, index) => ({
+      ...result,
+      centre_id: `legacy-${index + 1}`,
+      centre_name: `Legacy Centre ${index + 1}`,
+      centre_code: `L${index + 1}`,
+      overall_fit_score: [21, 99, 33, 88, 45, 77, 11, 66][index],
+      id: `legacy-${index + 1}`,
+      name: `Legacy Centre ${index + 1}`,
+      score: [21, 99, 33, 88, 45, 77, 11, 66][index],
+    }));
+    results = legacyResults;
+    const contextId = saveCentreReturnContext({
+      uid: 'saved-family-1',
+      page: 'Find my matches',
+      matchControls: { budget: 1200, weights: { vacancy: 3, cost: 3, travel: 3 } },
+      matchSnapshot: {
+        results: legacyResults,
+        run: {
+          uid: 'saved-family-1', profileId: 'saved-family-1',
+          weights: { vacancy: 3, cost: 3, travel: 3 },
+          explanation: { summary_narrative: 'Legacy shortlist context.', ranking_rationale: 'Legacy ordering is retained.' },
+        },
+      },
+    });
+    window.history.pushState({ centreOriginId: contextId, centreDetails: true, returnPath: '/' }, '', '/centres/legacy-1');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await screen.findByRole('heading', { level: 1, name: 'Legacy Centre 1' });
+    fireEvent.click(screen.getByRole('link', { name: /browse centres/i }));
+
+    await screen.findByText('Showing 6 matches');
+    const cards = [...document.querySelectorAll('.centre-card')];
+    expect(cards).toHaveLength(6);
+    expect(cards.map((card) => card.querySelector('h3')?.textContent)).toEqual([
+      'Legacy Centre 1', 'Legacy Centre 2', 'Legacy Centre 3',
+      'Legacy Centre 4', 'Legacy Centre 5', 'Legacy Centre 6',
+    ]);
+    expect(cards.map((card) => card.textContent.match(/(\d+)% match/)?.[1])).toEqual(['21', '99', '33', '88', '45', '77']);
+    expect(screen.getByText('Legacy ordering is retained.')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Legacy Centre 7' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Legacy Centre 8' })).toBeNull();
+    await waitFor(() => {
+      const commuteIds = [...new Set(requests
+        .map(({ path }) => path.match(/^\/api\/v1\/centres\/(legacy-\d+)\/commute$/)?.[1])
+        .filter(Boolean))];
+      expect(commuteIds).toEqual(['legacy-1', 'legacy-2', 'legacy-3', 'legacy-4', 'legacy-5', 'legacy-6']);
+    });
   });
 
   it('keeps a pending importance edit when navigating to Family profile', async () => {
@@ -624,7 +799,7 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
     await openPage('Family profile');
     await screen.findByRole('slider', { name: 'Travel fit' });
     await openPage('Find my matches');
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     fireEvent.change(screen.getByRole('slider', { name: 'Travel fit' }), { target: { value: '4' } });
     await openPage('Family profile');
     expect(screen.getByRole('slider', { name: 'Travel fit' }).value).toBe('4');
@@ -672,7 +847,7 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
     await openPage('Family profile');
     await screen.findByRole('slider', { name: 'Travel fit' });
     await openPage('Find my matches');
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     const deferred = [];
     let matchingCalls = 0;
     fetchMock.mockImplementation(async (input, options = {}) => {
@@ -717,7 +892,7 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
     await openPage('Family profile');
     await screen.findByRole('slider', { name: 'Travel fit' });
     await openPage('Find my matches');
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     let releaseFirstSave;
     const saveBodies = [];
     fetchMock.mockImplementation(async (input, options = {}) => {
@@ -757,7 +932,7 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
     await openPage('Family profile');
     await screen.findByRole('slider', { name: 'Travel fit' });
     await openPage('Find my matches');
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     let releaseAutomaticSave;
     const saveBodies = [];
     const initialMatchCount = requests.filter((request) => request.path === '/api/v1/centres/match').length;
@@ -803,7 +978,7 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
     await openPage('Family profile');
     await screen.findByRole('slider', { name: 'Travel fit' });
     await openPage('Find my matches');
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     const priorImplementation = fetchMock.getMockImplementation();
     let releaseAutomaticSave;
     let saveCount = 0;
@@ -846,7 +1021,7 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
     await openPage('Family profile');
     await screen.findByRole('slider', { name: 'Travel fit' });
     await openPage('Find my matches');
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     const priorImplementation = fetchMock.getMockImplementation();
     const releaseMatches = [];
     let pendingMatchCount = 0;
@@ -889,7 +1064,7 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
     await openPage('Family profile');
     await screen.findByRole('slider', { name: 'Travel fit' });
     await openPage('Find my matches');
-    await screen.findByText('Showing 10 matches');
+    await screen.findByText('Showing 6 matches');
     const matchCount = requests.filter((request) => request.path === '/api/v1/centres/match').length;
     const contextId = saveCentreReturnContext({
       uid: 'saved-family-1',
