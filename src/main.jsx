@@ -410,7 +410,7 @@ function ImportanceRatings({ ratings, onChange }) {
           </label>
         );
       })}
-      <p className="fine-print rank-note">1 = least important; 5 = most important. Ratings can tie. Matching weights are proportional to each rating's share of the total.</p>
+      <p className="fine-print rank-note importance-guidance">1 = least important; 5 = most important. Ratings can tie. Matching weights are proportional to each rating's share of the total.</p>
     </>
   );
 }
@@ -540,8 +540,8 @@ export function App() {
   const [matchMessage, setMatchMessage] = useState('');
   const matchRequestGenerationRef = useRef(0);
   const ratingEditGenerationRef = useRef(0);
-  const matchPreferenceEditRef = useRef(0);
   const profileWriteQueueRef = useRef(Promise.resolve());
+  const ratingSaveQueueRef = useRef({ uid: null, count: 0 });
   const [ratingSaveStatus, setRatingSaveStatus] = useState('idle'); // idle | saving | error
   const [ratingSaveMessage, setRatingSaveMessage] = useState('');
   useEffect(() => {
@@ -887,6 +887,7 @@ export function App() {
         matchRestoreGenerationRef.current += 1;
         matchRequestGenerationRef.current += 1;
         ratingEditGenerationRef.current += 1;
+        ratingSaveQueueRef.current = { uid: nextIdentity, count: 0 };
         setRatingSaveStatus('idle');
         setRatingSaveMessage('');
         setMatchStatus('idle');
@@ -1905,6 +1906,9 @@ export function App() {
     if (!profile || !profileId || !currentUser) return;
     const generation = ratingEditGenerationRef.current;
     const uid = currentUser.uid || null;
+    if (ratingSaveQueueRef.current.uid !== uid) ratingSaveQueueRef.current = { uid, count: 0 };
+    const ratingSaveQueue = ratingSaveQueueRef.current;
+    ratingSaveQueue.count += 1;
     const intendedWeights = { ...weights };
     setRatingSaveStatus('saving');
     setRatingSaveMessage('Saving your latest importance ratings…');
@@ -1922,6 +1926,7 @@ export function App() {
     profileWriteQueueRef.current = write.catch(() => undefined);
     try {
       const savedProfile = await write;
+      ratingSaveQueue.count = Math.max(0, ratingSaveQueue.count - 1);
       if (!savedProfile || uid !== activeAccountIdRef.current) return;
       if (generation !== ratingEditGenerationRef.current) {
         setProfile(savedProfile);
@@ -1938,6 +1943,7 @@ export function App() {
       setRatingSaveMessage('');
       await runMatching(savedProfile);
     } catch (error) {
+      ratingSaveQueue.count = Math.max(0, ratingSaveQueue.count - 1);
       if (uid !== activeAccountIdRef.current || generation !== ratingEditGenerationRef.current) return;
       setRatingSaveStatus('error');
       setRatingSaveMessage(error.message || 'Your importance ratings could not be saved. Retry to use them for matching.');
@@ -1951,10 +1957,21 @@ export function App() {
 
   useEffect(() => {
     if (!profile || !currentUser) return undefined;
-    if (JSON.stringify(weights) === JSON.stringify(profile.weights)) return undefined;
+    if (JSON.stringify(weights) === JSON.stringify(profile.weights)) {
+      if (ratingSaveStatus === 'pending' && ratingSaveQueueRef.current.uid === currentUser.uid && ratingSaveQueueRef.current.count === 0) {
+        setRatingSaveStatus('idle');
+        setRatingSaveMessage('');
+        if (matchStatus === 'ready' || (matchStatus === 'done' && JSON.stringify(matchRun?.weights) !== JSON.stringify(profile.weights))) {
+          setMatchStatus('idle');
+          setMatchMessage('');
+        }
+      }
+      return undefined;
+    }
+    if (ratingSaveStatus === 'saving' || ratingSaveStatus === 'error') return undefined;
     const timer = setTimeout(() => { void saveEditedRatings(); }, 800);
     return () => clearTimeout(timer);
-  }, [weights, profile, currentUser]);
+  }, [weights, profile, currentUser, ratingSaveStatus, matchStatus, matchRun]);
 
   const saveProfile = async (event) => {
     event.preventDefault();
@@ -2960,10 +2977,10 @@ export function App() {
                           {(centre.fee_breakdown?.estimated_subsidy ?? centre.subsidy_amount ?? centre.fee_breakdown?.subsidy_amount) != null && <p>Estimated subsidy: {money(centre.fee_breakdown?.estimated_subsidy ?? centre.subsidy_amount ?? centre.fee_breakdown?.subsidy_amount)}</p>}
                           <p>Vacancy: {centre.current_vacancy_status ?? centre.vacancy_status ?? centre.vacancy?.status ?? centre.vacancy_information?.status ?? 'Not provided'}</p>
                           {centre.enrollment_month_year && <p>Vacancy month: {monthYear(centre.enrollment_month_year)}</p>}
-                          {(centre.travel_breakdown?.commute_duration_mins ?? centre.travel_breakdown?.duration_mins ?? centre.travel_breakdown?.duration_minutes) != null && <p className="fine-print">Matching travel estimate: {centre.travel_breakdown.commute_duration_mins ?? centre.travel_breakdown.duration_mins ?? centre.travel_breakdown.duration_minutes} min{(centre.travel_breakdown.commute_distance_km ?? centre.travel_breakdown.distance_km) != null ? ` · ${centre.travel_breakdown.commute_distance_km ?? centre.travel_breakdown.distance_km} km` : ''}</p>}
+                          {(centre.travel_breakdown?.commute_duration_mins ?? centre.travel_breakdown?.duration_mins ?? centre.travel_breakdown?.duration_minutes) != null && <p className="fine-print match-result-detail">Matching travel estimate: {centre.travel_breakdown.commute_duration_mins ?? centre.travel_breakdown.duration_mins ?? centre.travel_breakdown.duration_minutes} min{(centre.travel_breakdown.commute_distance_km ?? centre.travel_breakdown.distance_km) != null ? ` · ${centre.travel_breakdown.commute_distance_km ?? centre.travel_breakdown.distance_km} km` : ''}</p>}
                           <MatchCommuteSummary centre={centre} summary={commute.summary} error={commute.errors}
                             loading={commute.loading} workplaceConfigured={Boolean(profile?.work)} onRetry={commute.retry} />
-                          <p className="fine-print">{[
+                          <p className="fine-print match-result-detail">{[
                             ['Vacancy fit', centre.vacancy_fit_score ?? centre.component_scores?.vacancy_fit ?? centre.component_scores?.vacancy],
                             ['Cost fit', centre.cost_fit_score ?? centre.component_scores?.cost_fit ?? centre.component_scores?.cost],
                             ['Travel fit', centre.travel_fit_score ?? centre.component_scores?.travel_fit ?? centre.component_scores?.travel],
