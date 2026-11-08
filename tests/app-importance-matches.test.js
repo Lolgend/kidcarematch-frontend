@@ -549,11 +549,15 @@ describe('importance ratings and backend matching flow', () => {
 
       if (scenario.field === 'summary_narrative') {
         expect(screen.getByRole('heading', { name: 'Fit Explanation' })).toBeTruthy();
+        expect(screen.queryByText('An available summary.')).toBeNull();
         expect(screen.getByText('An available ranking rationale.')).toBeTruthy();
+        expect(screen.queryByText('[object Object]')).toBeNull();
         expect(within(document.querySelectorAll('.centre-card')[0]).getByText('An available lead rationale.')).toBeTruthy();
       } else if (scenario.field === 'ranking_rationale') {
         expect(screen.getByRole('heading', { name: 'Fit Explanation' })).toBeTruthy();
         expect(screen.getByText('An available summary.')).toBeTruthy();
+        expect(screen.queryByText('An available ranking rationale.')).toBeNull();
+        expect(screen.queryByText('malformed')).toBeNull();
         expect(within(document.querySelectorAll('.centre-card')[0]).getByText('An available lead rationale.')).toBeTruthy();
       } else {
         expect(screen.getByRole('heading', { name: 'Fit Explanation' })).toBeTruthy();
@@ -735,6 +739,11 @@ it('retains edited ratings after an automatic save fails and Retry saves the lat
   });
 
   it('caps an older oversized saved match snapshot and evaluates commutes only for its first six results', async () => {
+    vi.stubGlobal('BroadcastChannel', undefined);
+    Object.defineProperty(window, 'BroadcastChannel', { configurable: true, value: undefined });
+    const cssTestApi = { escape: (value) => String(value) };
+    vi.stubGlobal('CSS', cssTestApi);
+    Object.defineProperty(window, 'CSS', { configurable: true, value: cssTestApi });
     await openMatches();
     await screen.findByText('Showing 6 matches');
     const legacyResults = makeResults().slice(0, 8).map((result, index) => ({
