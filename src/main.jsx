@@ -1808,7 +1808,7 @@ export function App() {
   }, [centres, query]);
 
   // The backend owns matching scores and order. Keep each result intact for centre actions.
-  const ranked = matchCandidates;
+  const ranked = matchCandidates.slice(0, 6);
   const matchExplanation = matchRun?.explanation;
   const summaryNarrative = typeof matchExplanation?.summary_narrative === 'string'
     ? matchExplanation.summary_narrative.trim()
@@ -1865,7 +1865,7 @@ export function App() {
     setMatchMessage('Finding matches using your saved preferences…');
 
     try {
-      const response = await matchCentres({ profile_id: savedProfileId, top_n: 10 });
+      const response = await matchCentres({ profile_id: savedProfileId, top_n: 6 });
       if (generation !== matchRequestGenerationRef.current || requestUid !== activeAccountIdRef.current) return;
       const results = Array.isArray(response)
         ? response
@@ -2899,10 +2899,10 @@ export function App() {
                   <div className="results-top">
                     <div>
                       <div className="eyebrow">YOUR SHORTLIST</div>
-                      <h2>Top matches for your family</h2>
+                      <h2>Top 6 matches for your family</h2>
                       <p>{matchMessage || 'Recommendations based on your saved preferences'}</p>
                     </div>
-                    <span className="result-count">Showing {Math.min(ranked.length, 10)} matches</span>
+                    <span className="result-count">Showing {ranked.length} {ranked.length === 1 ? 'match' : 'matches'}</span>
                   </div>
 
                   {matchIsOutdated && ranked.length > 0 && <p className="notice matches-outdated" role="status">
@@ -2952,9 +2952,9 @@ export function App() {
                   )}
 
                   {['done', 'loading', 'error'].includes(matchStatus) && ranked.length > 0 && (
-                    <MatchesCommute centres={ranked.slice(0, 10)} currentUser={currentUser} profileId={profileId}
+                    <MatchesCommute centres={ranked} currentUser={currentUser} profileId={profileId}
                       profile={profile} onSignIn={() => setAuthMode('login')}>
-                      {(commuteFor) => ranked.slice(0, 10).map((centre, index) => {
+                      {(commuteFor) => ranked.map((centre, index) => {
                         const commute = commuteFor(centre);
                         const candidateHighlightValues = [candidateHighlights[index], centre.highlight]
                           .filter((value) => typeof value === 'string' && value.trim())
