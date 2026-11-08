@@ -1813,6 +1813,9 @@ export function App() {
   const summaryNarrative = typeof matchExplanation?.summary_narrative === 'string'
     ? matchExplanation.summary_narrative.trim()
     : '';
+  const rankingRationale = typeof matchExplanation?.ranking_rationale === 'string'
+    ? matchExplanation.ranking_rationale.trim()
+    : '';
   const topCentreRationale = typeof matchExplanation?.top_centre_rationale === 'string'
     ? matchExplanation.top_centre_rationale.trim()
     : '';
@@ -2944,10 +2947,11 @@ export function App() {
                     />
                   )}
 
-                  {ranked.length > 0 && summaryNarrative && (
+                  {ranked.length > 0 && (summaryNarrative || rankingRationale) && (
                     <section className="match-explanation-summary" aria-labelledby="match-explanation-heading">
-                      <h3 id="match-explanation-heading">Why these matches</h3>
-                      <p>{summaryNarrative}</p>
+                      <h3 id="match-explanation-heading">Fit Explanation</h3>
+                      {summaryNarrative && <p>{summaryNarrative}</p>}
+                      {rankingRationale && <p>{rankingRationale}</p>}
                     </section>
                   )}
 
