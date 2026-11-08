@@ -225,6 +225,173 @@ describe('importance ratings and backend matching flow', () => {
     expect(screen.getByText(/did not return any centres/i)).toBeTruthy();
   });
 
+  it('clears the pending save state when an edit is reverted before the debounce expires', async () => {
+    await openMatches();
+    await screen.findByText('Showing 10 matches');
+    const initialMatchCount = requests.filter((request) => request.path === '/api/v1/centres/match').length;
+    vi.useFakeTimers();
+    const slider = screen.getByRole('slider', { name: 'Travel fit' });
+    fireEvent.change(slider, { target: { value: '4' } });
+    expect(screen.getByRole('button', { name: /saving preferences/i })).toBeTruthy();
+    fireEvent.change(slider, { target: { value: '3' } });
+
+    await vi.advanceTimersByTimeAsync(800);
+    expect(screen.getByRole('button', { name: /refresh my matches/i })).toBeTruthy();
+    expect(requests.filter((request) => request.path === '/api/v1/profile/saved-family-1' && request.method === 'PUT')).toHaveLength(0);
+    expect(requests.filter((request) => request.path === '/api/v1/centres/match')).toHaveLength(initialMatchCount);
+  });
+
+  it('saves a reverted rating after an earlier in-flight write settles', async () => {
+    await openMatches();
+    await screen.findByText('Showing 10 matches');
+    const saveBodies = [];
+    let releaseFirstSave;
+    fetchMock.mockImplementation(async (input, options = {}) => {
+      const path = new URL(input).pathname;
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      requests.push({ path, method, body });
+      if (path === '/api/v1/profile/saved-family-1' && method === 'PUT') {
+        saveBodies.push(body);
+        if (saveBodies.length === 1) return new Promise((resolve) => { releaseFirstSave = resolve; });
+        profile = { ...profile, ...body };
+        return jsonResponse(vi, profile);
+      }
+      if (path === '/api/v1/centres/match' && method === 'POST') return jsonResponse(vi, { profile_id: profile.profile_id, results });
+      return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
+    });
+
+    vi.useFakeTimers();
+    const slider = screen.getByRole('slider', { name: 'Travel fit' });
+    fireEvent.change(slider, { target: { value: '4' } });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(saveBodies.map((body) => body.travel_weight)).toEqual([4]);
+    fireEvent.change(slider, { target: { value: '3' } });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(screen.getByRole('button', { name: /saving preferences/i })).toBeTruthy();
+    expect(saveBodies).toHaveLength(1);
+
+    await act(async () => {
+      releaseFirstSave(jsonResponse(vi, { ...profile, travel_weight: 4 }));
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(saveBodies).toHaveLength(2));
+    expect(saveBodies.map((body) => body.travel_weight)).toEqual([4, 3]);
+    await vi.waitFor(() => expect(profile.travel_weight).toBe(3));
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: /refresh my matches/i })).toBeTruthy());
+    vi.useRealTimers();
+  });
+
+  it('does not schedule another save while the current save response is slow', async () => {
+    await openMatches();
+    await screen.findByText('Showing 10 matches');
+    const startingMatchCount = requests.filter((request) => request.path === '/api/v1/centres/match').length;
+    let releaseSave;
+    const saveBodies = [];
+    fetchMock.mockImplementation(async (input, options = {}) => {
+      const path = new URL(input).pathname;
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      requests.push({ path, method, body });
+      if (path === '/api/v1/profile/saved-family-1' && method === 'PUT') {
+        saveBodies.push(body);
+        return new Promise((resolve) => { releaseSave = resolve; });
+      }
+      if (path === '/api/v1/centres/match' && method === 'POST') return jsonResponse(vi, { profile_id: profile.profile_id, results });
+      return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
+    });
+
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByRole('slider', { name: 'Travel fit' }), { target: { value: '4' } });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(saveBodies).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2400);
+    expect(saveBodies).toHaveLength(1);
+
+    await act(async () => {
+      releaseSave(jsonResponse(vi, { ...profile, travel_weight: 4 }));
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+    await waitFor(() => expect(requests.filter((request) => request.path === '/api/v1/centres/match')).toHaveLength(startingMatchCount + 1));
+    expect(saveBodies).toHaveLength(1);
+  });
+
+  it('clears save progress when the saved rating is restored while matching is still pending', async () => {
+    await openMatches();
+    await screen.findByText('Showing 10 matches');
+    const saveBodies = [];
+    let releaseFirstMatch;
+    let matchCalls = 0;
+    fetchMock.mockImplementation(async (input, options = {}) => {
+      const path = new URL(input).pathname;
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      requests.push({ path, method, body });
+      if (path === '/api/v1/profile/saved-family-1' && method === 'PUT') {
+        saveBodies.push(body);
+        profile = { ...profile, ...body };
+        return jsonResponse(vi, profile);
+      }
+      if (path === '/api/v1/centres/match' && method === 'POST') {
+        matchCalls += 1;
+        if (matchCalls === 1) return new Promise((resolve) => { releaseFirstMatch = resolve; });
+        return jsonResponse(vi, { profile_id: profile.profile_id, results });
+      }
+      return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
+    });
+
+    vi.useFakeTimers();
+    const slider = screen.getByRole('slider', { name: 'Travel fit' });
+    fireEvent.change(slider, { target: { value: '4' } });
+    await vi.advanceTimersByTimeAsync(800);
+    await vi.waitFor(() => expect(matchCalls).toBe(1));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(saveBodies).toHaveLength(1);
+    fireEvent.change(slider, { target: { value: '5' } });
+    fireEvent.change(slider, { target: { value: '4' } });
+    expect(screen.queryByRole('button', { name: /saving preferences/i })).toBeNull();
+    await vi.advanceTimersByTimeAsync(800);
+    expect(matchCalls).toBe(2);
+    expect(saveBodies.map((body) => body.travel_weight)).toEqual([4]);
+
+    await act(async () => {
+      releaseFirstMatch(jsonResponse(vi, { profile_id: profile.profile_id, results: [] }));
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+  });
+
+  it('restarts an invalidated initial match when ratings return to the saved values', async () => {
+    await signIn();
+    let releaseInitialMatch;
+    let matchRequests = 0;
+    const priorImplementation = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((input, options = {}) => {
+      if (new URL(input).pathname === '/api/v1/centres/match' && (options.method || 'GET') === 'POST') {
+        matchRequests += 1;
+        if (matchRequests === 1) return new Promise((resolve) => { releaseInitialMatch = resolve; });
+      }
+      return priorImplementation(input, options);
+    });
+    await openPage('Find my matches');
+    await waitFor(() => expect(matchRequests).toBe(1));
+    vi.useFakeTimers();
+    const slider = screen.getByRole('slider', { name: 'Travel fit' });
+    fireEvent.change(slider, { target: { value: '4' } });
+    fireEvent.change(slider, { target: { value: '3' } });
+    await vi.advanceTimersByTimeAsync(800);
+    await vi.waitFor(() => expect(matchRequests).toBe(2));
+    expect(screen.queryByRole('heading', { name: 'Saving your preferences' })).toBeNull();
+
+    await act(async () => {
+      releaseInitialMatch(jsonResponse(vi, { profile_id: profile.profile_id, results: [] }));
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+    expect(screen.queryByRole('button', { name: /saving preferences/i })).toBeNull();
+  });
+
   it('lets a new family set independent ratings during onboarding and uses the saved profile for matches', async () => {
     needsOnboarding = true;
     window.localStorage.setItem('kidcare-profile:saved-family-1', JSON.stringify({
