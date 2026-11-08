@@ -1,19 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   PROFILE_DEFAULTS,
-  RANK_WEIGHTS,
   WEIGHT_KEYS,
   WEIGHT_LABELS,
   fromApiProfile,
   isProfileComplete,
   nextMonthValue,
   normalizeWeights,
-  priorityOrder,
-  setRank,
   toApiProfile,
   validateFamilyProfile,
-  weightsFromCostShare,
-  weightsFromOrder,
 } from "../../src/profile/familyProfile.js";
 
 describe("familyProfile module", () => {
@@ -155,30 +150,19 @@ describe("familyProfile module", () => {
   });
 
   describe("toApiProfile", () => {
-    it("serialises weights { vacancy: 50, cost: 35, travel: 15 } to weights summing to 1.0", () => {
+    it("serialises independent integer ratings without normalization", () => {
       const form = buildValidForm({
-        weights: { vacancy: 50, cost: 35, travel: 15 },
+        weights: { vacancy: 5, cost: 5, travel: 1 },
       });
       const apiPayload = toApiProfile(form);
-      expect(apiPayload.vacancy_weight).toBe(0.5);
-      expect(apiPayload.cost_weight).toBe(0.35);
-      expect(apiPayload.travel_weight).toBe(0.15);
-      expect(
-        apiPayload.vacancy_weight + apiPayload.cost_weight + apiPayload.travel_weight
-      ).toBeCloseTo(1.0, 5);
+      expect(apiPayload).toMatchObject({ vacancy_weight: 5, cost_weight: 5, travel_weight: 1 });
     });
 
-    it("serialises different weight rankings to 3 weights summing to 1.0", () => {
-      const form = buildValidForm({
-        weights: { vacancy: 15, cost: 50, travel: 35 },
-      });
-      const apiPayload = toApiProfile(form);
-      expect(apiPayload.vacancy_weight).toBe(0.15);
-      expect(apiPayload.cost_weight).toBe(0.5);
-      expect(apiPayload.travel_weight).toBe(0.35);
-      expect(
-        apiPayload.vacancy_weight + apiPayload.cost_weight + apiPayload.travel_weight
-      ).toBeCloseTo(1.0, 5);
+    it("preserves equal low and high ratings as distinct choices", () => {
+      expect(toApiProfile(buildValidForm({ weights: { vacancy: 1, cost: 1, travel: 1 } })))
+        .toMatchObject({ vacancy_weight: 1, cost_weight: 1, travel_weight: 1 });
+      expect(toApiProfile(buildValidForm({ weights: { vacancy: 5, cost: 5, travel: 5 } })))
+        .toMatchObject({ vacancy_weight: 5, cost_weight: 5, travel_weight: 5 });
     });
 
     it("preserves an explicitly passed profileName or form profile_name", () => {
@@ -256,9 +240,9 @@ describe("familyProfile module", () => {
       household_member_count: 3,
       budget_max: 1200,
       enrollment_month_year: "2027-06",
-      vacancy_weight: 0.35,
-      cost_weight: 0.5,
-      travel_weight: 0.15,
+      vacancy_weight: 2,
+      cost_weight: 4,
+      travel_weight: 1,
     };
 
     it("reconstructs frontend form object matching PROFILE_DEFAULTS structure and preserves profile identifiers", () => {
@@ -279,38 +263,34 @@ describe("familyProfile module", () => {
 
     it("round-trips backend weights when no local draft exists", () => {
       const reconstructed = fromApiProfile(apiProfile);
-      expect(reconstructed.weights).toEqual({
-        vacancy: 35,
-        cost: 50,
-        travel: 15,
-      });
+      expect(reconstructed.weights).toEqual({ vacancy: 2, cost: 4, travel: 1 });
     });
 
-    it("preserves weights from local draft when provided", () => {
+    it("uses server ratings instead of stale local draft ratings", () => {
       const localDraft = {
-        weights: { vacancy: 15, cost: 35, travel: 50 },
+        weights: { vacancy: 1, cost: 2, travel: 5 },
       };
       const reconstructed = fromApiProfile(apiProfile, localDraft);
-      expect(reconstructed.weights).toEqual({
-        vacancy: 15,
-        cost: 35,
-        travel: 50,
-      });
+      expect(reconstructed.weights).toEqual({ vacancy: 2, cost: 4, travel: 1 });
     });
 
-    it("handles legacy 2-weight API profiles lacking vacancy_weight", () => {
+    it("rounds server ratings directly and defaults missing ratings", () => {
       const legacyApi = {
         ...apiProfile,
-        vacancy_weight: undefined,
-        cost_weight: 0.7,
-        travel_weight: 0.3,
+        vacancy_weight: 2.6,
+        cost_weight: undefined,
+        travel_weight: 5,
       };
       const reconstructed = fromApiProfile(legacyApi);
-      expect(reconstructed.weights).toEqual({
-        vacancy: 50,
-        cost: 35,
-        travel: 15,
-      });
+      expect(reconstructed.weights).toEqual({ vacancy: 3, cost: 3, travel: 5 });
+      expect(fromApiProfile({ ...apiProfile, vacancy_weight: 0.35, cost_weight: 0.5, travel_weight: 0.15 }).weights)
+        .toEqual({ vacancy: 1, cost: 1, travel: 1 });
+    });
+
+    it("converts legacy ranked browser drafts to ratings 3/2/1", () => {
+      const legacyDraft = { weights: { vacancy: 50, cost: 35, travel: 15 } };
+      const emptyRatings = { ...apiProfile, vacancy_weight: null, cost_weight: null, travel_weight: null };
+      expect(fromApiProfile(emptyRatings, legacyDraft).weights).toEqual({ vacancy: 3, cost: 2, travel: 1 });
     });
 
     it("maps null workplace postal code and zero income to empty strings", () => {
@@ -327,60 +307,19 @@ describe("familyProfile module", () => {
     });
   });
 
-  describe("shared ranking and default helpers", () => {
-    it("exports standard weight keys, labels, and rank weights", () => {
+  describe("importance defaults and helpers", () => {
+    it("exports standard rating keys and labels", () => {
       expect(WEIGHT_KEYS).toEqual(["vacancy", "cost", "travel"]);
       expect(WEIGHT_LABELS).toEqual({
         vacancy: "Vacancy fit",
         cost: "Cost fit",
         travel: "Travel fit",
       });
-      expect(RANK_WEIGHTS).toEqual([50, 35, 15]);
     });
 
-    it("determines priority order with ties resolving by default key order", () => {
-      expect(priorityOrder({ vacancy: 50, cost: 35, travel: 15 })).toEqual([
-        "vacancy",
-        "cost",
-        "travel",
-      ]);
-      expect(priorityOrder({ vacancy: 30, cost: 30, travel: 30 })).toEqual([
-        "vacancy",
-        "cost",
-        "travel",
-      ]);
-      expect(priorityOrder({ vacancy: 10, cost: 50, travel: 20 })).toEqual([
-        "cost",
-        "travel",
-        "vacancy",
-      ]);
-    });
-
-    it("normalizes arbitrary weights to standard preset ranks", () => {
-      expect(normalizeWeights({ vacancy: 80, cost: 10, travel: 10 })).toEqual({
-        vacancy: 50,
-        cost: 35,
-        travel: 15,
-      });
-    });
-
-    it("swaps ranks using setRank", () => {
-      const base = { vacancy: 50, cost: 35, travel: 15 };
-      // Move 'travel' (currently rank 2) to rank 0
-      const updated = setRank(base, "travel", 0);
-      expect(updated).toEqual({
-        travel: 50,
-        cost: 35,
-        vacancy: 15,
-      });
-    });
-
-    it("derives weights from cost share", () => {
-      expect(weightsFromCostShare(0.7)).toEqual({
-        vacancy: 50,
-        cost: 35,
-        travel: 15,
-      });
+    it("keeps ties independent and clamps restored ratings to the slider range", () => {
+      expect(normalizeWeights({ vacancy: 3, cost: 3, travel: 3 })).toEqual({ vacancy: 3, cost: 3, travel: 3 });
+      expect(normalizeWeights({ vacancy: 0, cost: 8, travel: 3 })).toEqual({ vacancy: 1, cost: 5, travel: 3 });
     });
 
     it("computes nextMonthValue in YYYY-MM format", () => {

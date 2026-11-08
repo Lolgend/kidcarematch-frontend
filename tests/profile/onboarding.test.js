@@ -13,7 +13,7 @@ describe('createOnboardingController', () => {
     locationPref: 'HOME',
     income: '',
     members: '',
-    weights: { vacancy: 50, cost: 35, travel: 15 },
+    weights: { vacancy: 5, cost: 5, travel: 1 },
   };
 
   const validApiProfile = {
@@ -29,9 +29,9 @@ describe('createOnboardingController', () => {
     location_preference: 'HOME',
     household_income: 0,
     household_member_count: 1,
-    vacancy_weight: 0.5,
-    cost_weight: 0.35,
-    travel_weight: 0.15,
+    vacancy_weight: 5,
+    cost_weight: 5,
+    travel_weight: 1,
   };
 
   let loadAccount;
@@ -338,6 +338,9 @@ describe('createOnboardingController', () => {
       expect.objectContaining({
         home_postal_code: '654321',
         profile_name: 'My family profile',
+        vacancy_weight: 5,
+        cost_weight: 5,
+        travel_weight: 1,
       })
     );
     const last = states.at(-1);
