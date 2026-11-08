@@ -544,6 +544,7 @@ export function App() {
   const ratingSaveQueueRef = useRef({ uid: null, count: 0 });
   const [ratingSaveStatus, setRatingSaveStatus] = useState('idle'); // idle | saving | error
   const [ratingSaveMessage, setRatingSaveMessage] = useState('');
+  const [ratingSaveSettlement, setRatingSaveSettlement] = useState(0);
   useEffect(() => {
     if (selectedCentre || centresLoading) return;
     const origin = pendingCentreOriginRestoreRef.current;
@@ -1944,7 +1945,11 @@ export function App() {
       await runMatching(savedProfile);
     } catch (error) {
       ratingSaveQueue.count = Math.max(0, ratingSaveQueue.count - 1);
-      if (uid !== activeAccountIdRef.current || generation !== ratingEditGenerationRef.current) return;
+      if (uid !== activeAccountIdRef.current) return;
+      if (generation !== ratingEditGenerationRef.current) {
+        if (ratingSaveQueueRef.current === ratingSaveQueue) setRatingSaveSettlement((settled) => settled + 1);
+        return;
+      }
       setRatingSaveStatus('error');
       setRatingSaveMessage(error.message || 'Your importance ratings could not be saved. Retry to use them for matching.');
     }
@@ -1971,7 +1976,7 @@ export function App() {
     if (ratingSaveStatus === 'saving' || ratingSaveStatus === 'error') return undefined;
     const timer = setTimeout(() => { void saveEditedRatings(); }, 800);
     return () => clearTimeout(timer);
-  }, [weights, profile, currentUser, ratingSaveStatus, matchStatus, matchRun]);
+  }, [weights, profile, currentUser, ratingSaveStatus, matchStatus, matchRun, ratingSaveSettlement]);
 
   const saveProfile = async (event) => {
     event.preventDefault();
@@ -3289,7 +3294,7 @@ export function App() {
 
                 <div className="form-footer">
                   <span className="fine-print">
-                    Saved to your account and used by Find my matches. Travel is scored from postal codes, not commute time.
+                    Saved to your account and used by Find my matches. Displayed commute modes and estimates are separate from matching travel scores.
                   </span>
                   <button type="submit" className="primary-btn" disabled={profileSaving || onboardingState.status === 'saving'}>
                     {profileSaving || onboardingState.status === 'saving' ? 'Saving…' : 'Save profile'} <Check size={16} />
