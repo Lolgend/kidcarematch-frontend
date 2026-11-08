@@ -135,7 +135,7 @@ describe('deliberate parent sign-in navigation', () => {
     await submitSignIn('email', user);
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Complete your family profile' })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/home postal code/i), { target: { value: '654321' } });
-    fireEvent.click(screen.getByRole('button', { name: /save profile/i }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /save profile/i })); });
     await waitFor(() => expect(screen.getByText('Find my matches', { selector: 'b' })).toBeTruthy());
   });
 
