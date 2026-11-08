@@ -168,6 +168,7 @@ describe('importance ratings and backend matching flow', () => {
     const vacancy = screen.getByRole('slider', { name: 'Vacancy fit' });
     const cost = screen.getByRole('slider', { name: 'Cost fit' });
     const travel = screen.getByRole('slider', { name: 'Travel fit' });
+    expect(screen.getByText(/Displayed commute modes and estimates are separate from matching travel scores/)).toBeTruthy();
     expect([vacancy.min, vacancy.max, vacancy.step, vacancy.value]).toEqual(['1', '5', '1', '3']);
     expect([cost.value, travel.value]).toEqual(['3', '3']);
 
@@ -279,6 +280,42 @@ describe('importance ratings and backend matching flow', () => {
     expect(saveBodies.map((body) => body.travel_weight)).toEqual([4, 3]);
     await vi.waitFor(() => expect(profile.travel_weight).toBe(3));
     await vi.waitFor(() => expect(screen.getByRole('button', { name: /refresh my matches/i })).toBeTruthy());
+    vi.useRealTimers();
+  });
+
+  it('clears pending progress when an older in-flight save fails after ratings revert', async () => {
+    await openMatches();
+    await screen.findByText('Showing 10 matches');
+    let releaseSave;
+    const saveBodies = [];
+    fetchMock.mockImplementation((input, options = {}) => {
+      const path = new URL(input).pathname;
+      const method = options.method || 'GET';
+      const body = options.body ? JSON.parse(options.body) : null;
+      requests.push({ path, method, body });
+      if (path === '/api/v1/profile/saved-family-1' && method === 'PUT') {
+        saveBodies.push(body);
+        return new Promise((resolve) => { releaseSave = resolve; });
+      }
+      if (path === '/api/v1/centres/match' && method === 'POST') return jsonResponse(vi, { profile_id: profile.profile_id, results });
+      return Promise.reject(new Error(`Unexpected request: ${method} ${path}`));
+    });
+
+    vi.useFakeTimers();
+    const slider = screen.getByRole('slider', { name: 'Travel fit' });
+    fireEvent.change(slider, { target: { value: '4' } });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(saveBodies.map((body) => body.travel_weight)).toEqual([4]);
+    fireEvent.change(slider, { target: { value: '3' } });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(screen.getByRole('button', { name: /saving preferences/i })).toBeTruthy();
+
+    await act(async () => {
+      releaseSave(jsonResponse(vi, { detail: 'Save unavailable' }, 503));
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('button', { name: /refresh my matches/i })).toBeTruthy();
+    expect(saveBodies).toHaveLength(1);
     vi.useRealTimers();
   });
 
