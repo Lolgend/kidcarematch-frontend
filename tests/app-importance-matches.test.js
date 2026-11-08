@@ -182,7 +182,7 @@ describe('importance ratings and backend matching flow', () => {
 
     await openPage('Find my matches');
     await waitFor(() => expect(screen.getByText('Showing 10 matches')).toBeTruthy());
-    expect(screen.queryByRole('heading', { name: 'Why these matches' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Fit Explanation' })).toBeNull();
     const matchRequests = requests.filter((request) => request.path === '/api/v1/centres/match');
     expect(matchRequests[0].body).toEqual({ profile_id: 'saved-family-1', top_n: 10 });
     const cards = [...document.querySelectorAll('.centre-card')];
@@ -463,7 +463,8 @@ describe('importance ratings and backend matching flow', () => {
 
   it('shows the backend summary, lead rationale, and aligned candidate highlights without duplicates or provider claims', async () => {
     explanation = {
-      summary_narrative: 'Your saved ratings prioritize vacancy and cost.',
+      summary_narrative: '  Your saved ratings prioritize vacancy and cost.  ',
+      ranking_rationale: '  Backend Centre 1 ranks first for its vacancy fit.  ',
       top_centre_rationale: 'Backend Centre 1 best fits your vacancy needs.',
       candidate_highlights: [
         'Backend Centre 1 balances vacancy and cost.',
@@ -474,8 +475,12 @@ describe('importance ratings and backend matching flow', () => {
     results[1].highlight = 'Backend Centre 2 has the best travel fit.';
     await openMatches();
 
-    const summary = await screen.findByRole('heading', { name: 'Why these matches' }, { timeout: 5000 });
-    expect(summary.parentElement.textContent).toContain(explanation.summary_narrative);
+    const summary = await screen.findByRole('heading', { name: 'Fit Explanation' }, { timeout: 5000 });
+    expect(summary.parentElement.textContent).toContain('Your saved ratings prioritize vacancy and cost.');
+    expect(summary.parentElement.textContent).toContain('Backend Centre 1 ranks first for its vacancy fit.');
+    expect(summary.parentElement.textContent.indexOf('Your saved ratings prioritize vacancy and cost.'))
+      .toBeLessThan(summary.parentElement.textContent.indexOf('Backend Centre 1 ranks first for its vacancy fit.'));
+    expect(summary.parentElement.textContent).not.toContain('  Your saved ratings');
     expect(summary.parentElement.textContent).not.toMatch(/gemini/i);
     const cards = [...document.querySelectorAll('.centre-card')];
     expect(within(cards[0]).getByText(explanation.top_centre_rationale)).toBeTruthy();
@@ -490,15 +495,18 @@ describe('importance ratings and backend matching flow', () => {
 
     const cases = [
       { field: 'summary_narrative', omit: true },
+      { field: 'ranking_rationale', omit: true },
       { field: 'top_centre_rationale', omit: true },
       { field: 'candidate_highlights', omit: true },
       { field: 'summary_narrative', blank: '   ' },
+      { field: 'ranking_rationale', blank: '\n  ' },
       { field: 'top_centre_rationale', blank: '\n  ' },
       { field: 'candidate_highlights', blank: ['', '  '] },
     ];
     for (const scenario of cases) {
       explanation = {
         summary_narrative: 'An available summary.',
+        ranking_rationale: 'An available ranking rationale.',
         top_centre_rationale: 'An available lead rationale.',
         candidate_highlights: ['First positional highlight.', 'Second positional highlight.'],
       };
@@ -510,10 +518,15 @@ describe('importance ratings and backend matching flow', () => {
       await screen.findByText('Showing 10 matches', {}, { timeout: 2000 });
 
       if (scenario.field === 'summary_narrative') {
-        expect(screen.queryByRole('heading', { name: 'Why these matches' })).toBeNull();
+        expect(screen.getByRole('heading', { name: 'Fit Explanation' })).toBeTruthy();
+        expect(screen.getByText('An available ranking rationale.')).toBeTruthy();
+        expect(within(document.querySelectorAll('.centre-card')[0]).getByText('An available lead rationale.')).toBeTruthy();
+      } else if (scenario.field === 'ranking_rationale') {
+        expect(screen.getByRole('heading', { name: 'Fit Explanation' })).toBeTruthy();
+        expect(screen.getByText('An available summary.')).toBeTruthy();
         expect(within(document.querySelectorAll('.centre-card')[0]).getByText('An available lead rationale.')).toBeTruthy();
       } else {
-        expect(screen.getByRole('heading', { name: 'Why these matches' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: 'Fit Explanation' })).toBeTruthy();
       }
       const cards = [...document.querySelectorAll('.centre-card')];
       if (scenario.field === 'top_centre_rationale') {
@@ -526,6 +539,54 @@ describe('importance ratings and backend matching flow', () => {
       }
     }
   }, 20000);
+
+  it('shows ranking-only explanations, but omits the banner when both narratives are unusable', async () => {
+    explanation = {
+      summary_narrative: '   ',
+      ranking_rationale: ' Backend Centre 1 ranks ahead because its fit is stronger. ',
+      top_centre_rationale: 'Individual centre explanation remains available.',
+    };
+    await openMatches();
+
+    const heading = await screen.findByRole('heading', { name: 'Fit Explanation' }, { timeout: 5000 });
+    expect(heading.parentElement.textContent).toContain('Backend Centre 1 ranks ahead because its fit is stronger.');
+    expect(heading.parentElement.textContent).not.toContain('  Backend');
+    expect(within(document.querySelectorAll('.centre-card')[0]).getByText('Individual centre explanation remains available.')).toBeTruthy();
+
+    explanation = {
+      summary_narrative: {},
+      ranking_rationale: ['malformed'],
+      top_centre_rationale: 'Individual centre explanation remains available.',
+    };
+    fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
+    await waitFor(() => expect(requests.filter((request) => request.path === '/api/v1/centres/match')).toHaveLength(2));
+    await screen.findByText('Showing 10 matches');
+    expect(screen.queryByRole('heading', { name: 'Fit Explanation' })).toBeNull();
+    expect(within(document.querySelectorAll('.centre-card')[0]).getByText('Individual centre explanation remains available.')).toBeTruthy();
+  }, 15000);
+
+  it('shows narratives for one match and suppresses the banner for zero matches', async () => {
+    results = results.slice(0, 1);
+    explanation = {
+      summary_narrative: 'One centre fits the saved preferences.',
+      ranking_rationale: 'This centre is the only match returned.',
+    };
+    await openMatches();
+
+    const heading = await screen.findByRole('heading', { name: 'Fit Explanation' }, { timeout: 5000 });
+    expect(heading.parentElement.textContent).toContain('One centre fits the saved preferences.');
+    expect(heading.parentElement.textContent).toContain('This centre is the only match returned.');
+    expect(document.querySelectorAll('.centre-card')).toHaveLength(1);
+
+    results = [];
+    explanation = {
+      summary_narrative: 'No matched centres explain this empty pool.',
+      ranking_rationale: 'There is no ranking to explain.',
+    };
+    fireEvent.click(screen.getByRole('button', { name: /refresh my matches/i }));
+    await screen.findByRole('heading', { name: 'No matches returned' });
+    expect(screen.queryByRole('heading', { name: 'Fit Explanation' })).toBeNull();
+  }, 15000);
 
   it('keeps per-result and positional highlights with their cards through centre detail and return', async () => {
     vi.stubGlobal('BroadcastChannel', undefined);
@@ -551,7 +612,7 @@ describe('importance ratings and backend matching flow', () => {
     fireEvent.click(within(cards[0]).getByRole('button', { name: 'View details' }));
     await screen.findByRole('heading', { level: 1, name: 'Backend Centre 1' });
     fireEvent.click(screen.getByRole('link', { name: /browse centres/i }));
-    expect(await screen.findByRole('heading', { name: 'Why these matches' }, { timeout: 4000 })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Fit Explanation' }, { timeout: 4000 })).toBeTruthy();
     expect(screen.getByText('A summary that stays with these results.')).toBeTruthy();
     cards = [...document.querySelectorAll('.centre-card')];
     expect(within(cards[0]).getByText('First centre result highlight.')).toBeTruthy();
